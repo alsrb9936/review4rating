@@ -1,0 +1,22 @@
+training:
+  batch: 256
+  eval_batch: 256
+  epoch: 200
+  lr: 0.001
+  weight_decay: 0.0
+
+evaluation:
+  eval_step: 1
+  early_stop_patience: 10
+  best_metric_name: "rmse"
+
+model:
+  embedding_size: 64
+  dropout_prob: 0.1
+
+data_path: "/home/infolab/mnt/mingyu/review_rec/dataset"
+other_path: "/home/infolab/mnt/mingyu/review_rec/cached/others"
+embedding_path: "/home/infolab/mnt/mingyu/review_rec/cached/embedding"
+sentiment_path: "/home/infolab/mnt/mingyu/review_rec/cached/sentiment"
+sentiment_model: "cardiffnlp/twitter-roberta-base-sentiment-latest"
+language_model: "sentence-transformers/all-MiniLM-L12-v2"

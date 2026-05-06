@@ -1,0 +1,7 @@
+AGENTS.md
+*.pt
+*.pth
+*.pkl
+*.txt
+__pycache__
+.pdf

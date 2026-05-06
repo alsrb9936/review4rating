@@ -1,0 +1,6 @@
+basemodel: "neumf"
+mf_embedding_size: 64
+mlp_embedding_size: 64
+mlp_hidden_size: [128, 64]
+dropout_prob: 0.1
+weight_decay: 0

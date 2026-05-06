@@ -1,0 +1,149 @@
+import os
+import json
+from tqdm import tqdm
+import torch
+import numpy as np
+import importlib
+from typing import Any
+
+_metric = importlib.import_module("metric")
+rmse = _metric.rmse
+mse = _metric.mse
+mae = _metric.mae
+print_results = _metric.print_results
+
+
+class BaseTrainer:
+    def __init__(self, model, train_dataloader, valid_dataloader, test_dataloader,
+                 configs):
+        self.model = model
+        self.train_dataloader = train_dataloader
+        self.valid_dataloader = valid_dataloader
+        self.test_dataloader = test_dataloader
+        self.configs = configs
+        
+        self.device = torch.device(f"cuda:{configs.get('gpu', 0)}" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device)
+        
+        self.optimizer = self._create_optimizer()
+        
+        self.early_stop_patience = configs.get('early_stop_patience', 5)
+        self.best_valid_metric = float('inf')
+        self.patience_counter = 0
+        
+        self.result_path = configs['result_path']
+        os.makedirs(self.result_path, exist_ok=True)
+        
+        self.train_log = []
+        
+        self.best_metric_name = configs.get('best_metric_name', 'rmse')
+        self.min_rating = float(configs.get('min_rating', 1.0))
+        self.max_rating = float(configs.get('max_rating', 5.0))
+        
+        self.epoch = configs.get('epoch', 100)
+        self.eval_step = configs.get('eval_step', 1)
+        self.model_name = configs.get('basemodel') or configs.get('model', {}).get('name', 'unknown')
+        self.dataset_name = configs.get('dataset', 'unknown')
+    
+    def _create_optimizer(self):
+        return torch.optim.Adam(
+            self.model.parameters(), 
+            lr=self.configs.get('lr', 0.001),
+            weight_decay=self.configs.get('weight_decay', 0)
+        )
+    
+    def train_epoch(self, epoch_idx):
+        raise NotImplementedError("Subclasses must implement train_epoch()")
+
+    def _build_metrics(self, predictions: np.ndarray[Any, Any], ratings: np.ndarray[Any, Any]):
+        return {
+            'mse': float(mse(predictions, ratings)),
+            'rmse': float(rmse(predictions, ratings)),
+            'mae': float(mae(predictions, ratings))
+        }
+    
+    def train(self):
+        print(f"Starting training for {self.epoch} epochs")
+        print(f"Model: {self.model_name}")
+        print(f"Dataset: {self.dataset_name}")
+        print(f"Device: {self.device}")
+        print(f"Best metric: {self.best_metric_name}")
+
+        for epoch in range(self.epoch):
+            train_loss_dict = self.train_epoch(epoch)
+
+            log_entry = {
+                'epoch': epoch + 1,
+                'train': train_loss_dict
+            }
+
+            print(f"Epoch {epoch+1}/{self.epoch} - "
+                  f"Total Loss: {train_loss_dict.get('total_loss', 0):.4f}")
+
+            if (epoch + 1) % self.eval_step == 0:
+                valid_metrics = self.evaluate(self.valid_dataloader, phase='valid')
+                log_entry['valid'] = valid_metrics
+                
+                current_metric = valid_metrics.get(self.best_metric_name, float('inf'))
+                
+                print("  Validation Metrics:")
+                print_results(valid_metrics)
+                
+                if current_metric < self.best_valid_metric:
+                    self.best_valid_metric = current_metric
+                    self.patience_counter = 0
+                    self.save_checkpoint('best_model.pt')
+                    print(f"  New Best! {self.best_metric_name}: {current_metric:.4f}")
+                else:
+                    self.patience_counter += 1
+                    print(f"  Patience: {self.patience_counter}/{self.early_stop_patience}")
+                
+                if self.patience_counter >= self.early_stop_patience:
+                    print(f"Early stopping triggered after {epoch+1} epochs")
+                    break
+            
+            self.train_log.append(log_entry)
+        
+        print("Training completed!")
+        self.save_checkpoint('final_model.pt')
+        self.save_logs()
+        
+        return self.best_valid_metric
+    
+    @torch.no_grad()
+    def evaluate(self, dataloader, phase='valid'):
+        self.model.eval()
+        
+        all_predictions = []
+        all_ratings = []
+        
+        for batch in dataloader:
+            ratings = batch["rating"].to(self.device)
+            
+            predictions = self._predict_batch(batch).view(-1)
+            all_predictions.append(predictions.cpu().numpy())
+            all_ratings.append(ratings.cpu().numpy())
+        
+        predictions = np.concatenate(all_predictions)
+        ratings = np.concatenate(all_ratings)
+        
+        return self._build_metrics(predictions, ratings)
+    
+    def _predict_batch(self, batch):
+        raise NotImplementedError("Subclasses must implement _predict_batch()")
+    
+    def save_checkpoint(self, filename):
+        checkpoint = {
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+        }
+        torch.save(checkpoint, os.path.join(self.result_path, filename))
+    
+    def save_logs(self):
+        with open(os.path.join(self.result_path, 'training_log.json'), 'w') as f:
+            json.dump(self.train_log, f, indent=2)
+    
+    def load_checkpoint(self, filepath):
+        checkpoint = torch.load(filepath, map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

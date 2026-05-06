@@ -1,0 +1,44 @@
+# RGCL Configuration
+# Review Graph Contrastive Learning with GCMC
+
+model:
+  name: "rgcl"
+  
+  # Embedding dimensions
+  embedding_size: 64
+  
+  # Graph convolution settings
+  num_layers: 1
+  dropout: 0.3
+  node_dropout: 0.8
+  
+  # Review feature settings
+  review_dim: 384  # Sentence transformer embedding dimension
+  use_review: true  # Whether to use review features
+  symm: true  # Symmetric normalization
+  
+  # Contrastive learning settings
+  use_contrastive: true
+  nd_weight: 0.3
+  ed_weight: 1.0
+  
+  # Prediction mode
+  classification: false
+
+training:
+  batch: 1
+  eval_batch: 1
+  epoch: 400
+  lr: 0.001
+  weight_decay: 0.0
+  early_stop_patience: 50
+  grad_clip: 1.0  # Gradient clipping threshold
+  eval_step: 1
+
+evaluation:
+  best_metric_name: "rmse"
+  metrics: ["rmse", "mse", "mae"]
+
+# Data paths and settings
+data:
+  use_cached_graphs: true  # Cache constructed graphs
