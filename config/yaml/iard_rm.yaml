@@ -7,7 +7,7 @@ model:
   d_model: 128
   num_layers: 2
   num_intents: 8
-  eta: 0.1
+  eta: 0.3
   dropout: 0.1
   tau_p: 0.2
   gate_alpha: 5.0

@@ -1,0 +1,105 @@
+training:
+  batch: 256
+  training:
+    batch: 256
+    eval_batch: 256
+    epoch: 200
+    lr: 0.001
+    weight_decay: 0.0
+    grad_clip: 1.0
+    overfit_n: 0
+  eval_batch: 256
+  epoch: 200
+  lr: 0.001
+  weight_decay: 0.0
+  grad_clip: 1.0
+  overfit_n: 0
+evaluation:
+  eval_step: 1
+  evaluation:
+    eval_step: 1
+    early_stop_patience: 10
+    best_metric_name: rmse
+    metrics: &id001
+    - rmse
+    - mse
+    - mae
+    clamp_eval_pred: true
+  early_stop_patience: 10
+  best_metric_name: rmse
+  metrics: *id001
+  clamp_eval_pred: true
+model:
+  embedding_size: 64
+  model:
+    embedding_size: 64
+    dropout_prob: 0.1
+    name: iard_rm
+    d_id: 64
+    d_text: 384
+    d_model: 128
+    num_layers: 2
+    num_intents: 8
+    eta: 0.1
+    dropout: 0.1
+    tau_p: 0.2
+    gate_alpha: 5.0
+    shared_fusion_scale: 1.0
+    residual_fusion_scale: 1.0
+    fixed_gate_value: null
+  dropout_prob: 0.1
+  name: iard_rm
+  d_id: 64
+  d_text: 384
+  d_model: 128
+  num_layers: 2
+  num_intents: 8
+  eta: 0.1
+  dropout: 0.1
+  tau_p: 0.2
+  gate_alpha: 5.0
+  shared_fusion_scale: 1.0
+  residual_fusion_scale: 1.0
+  fixed_gate_value: null
+loss:
+  loss_preset: full_iard
+  loss:
+    loss_preset: full_iard
+    lambda_rating: 1.0
+    lambda_align: 0.1
+    lambda_sep: 0.05
+    lambda_recon: 0.1
+    lambda_gate: 0.001
+    lambda_proto: 0.01
+    tau_c: 0.2
+    eps: 1e-8
+    detach_gate_for_align: true
+    detach_zx_for_recon: false
+  lambda_rating: 1.0
+  lambda_align: 0.1
+  lambda_sep: 0.05
+  lambda_recon: 0.1
+  lambda_gate: 0.001
+  lambda_proto: 0.01
+  tau_c: 0.2
+  eps: 1e-8
+  detach_gate_for_align: true
+  detach_zx_for_recon: false
+data:
+  review_emb_path: null
+  data:
+    review_emb_path: null
+data_path: /home/infolab/mnt/mingyu/review_rec/dataset
+other_path: /home/infolab/mnt/mingyu/review_rec/cached/others
+embedding_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding
+sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
+sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
+language_model: sentence-transformers/all-MiniLM-L12-v2
+basemodel: iard_rm
+gpu: 3
+seed: 42
+dataset: Amazon_Musical_Instruments_14
+sentiment: false
+result_path: results/iard_rm_42_Amazon_Musical_Instruments_14_20260506_163554
+num_users: 1429
+num_items: 900

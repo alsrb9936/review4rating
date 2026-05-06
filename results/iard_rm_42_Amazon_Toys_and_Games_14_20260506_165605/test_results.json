@@ -1,0 +1,21 @@
+{
+  "mse": 0.5510621070861816,
+  "rmse": 0.7423355579376221,
+  "mae": 0.5154997110366821,
+  "mean_gate": 0.7428107261657715,
+  "std_gate": 0.14087259769439697,
+  "mean_p_inc": 0.25718921422958374,
+  "std_p_inc": 0.14087259769439697,
+  "mean_alignment": -0.029439765959978104,
+  "std_alignment": 0.3037968873977661,
+  "mean_intent_entropy": 1.8690921068191528,
+  "low_alignment_rmse": 0.8880157470703125,
+  "low_alignment_mae": 0.675881564617157,
+  "low_alignment_count": 3352.0,
+  "mid_alignment_rmse": 0.7362567186355591,
+  "mid_alignment_mae": 0.5169734954833984,
+  "mid_alignment_count": 10056.0,
+  "high_alignment_rmse": 0.5835376977920532,
+  "high_alignment_mae": 0.3506965637207031,
+  "high_alignment_count": 3352.0
+}

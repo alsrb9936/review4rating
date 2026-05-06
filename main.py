@@ -81,7 +81,7 @@ def apply_iard_loss_preset(configs):
         },
         'full_low_align': {
             **full_defaults,
-            'lambda_align': 0.01,
+            'lambda_align': 0.05,
         },
     }
     if preset not in preset_overrides:
