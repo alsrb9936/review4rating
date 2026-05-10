@@ -45,9 +45,13 @@ class NARRE(AbstractRec):
 
         self.word_embedding = nn.Embedding.from_pretrained(
             embedding_weight,
-            freeze=True,
+            freeze=bool(configs.get("freeze_word_embedding", False)),
             padding_idx=self.pad_idx,
         )
+        # Keep large embedding on CPU to avoid OOM with 300d GoogleNews
+        self.word_embedding_cpu = bool(configs.get("word_embedding_cpu", True))
+        if self.word_embedding_cpu:
+            self.word_embedding.cpu()
 
         self.user_conv = nn.Conv1d(
             in_channels=self.word_dim,
@@ -89,11 +93,23 @@ class NARRE(AbstractRec):
         self.item_bias = nn.Embedding(self.num_items, 1)
         self.predict_layer = nn.Linear(self.id_dim, 1)
 
+        ratings_tensor = torch.as_tensor(
+            getattr(train_dataset, "ratings"),
+            dtype=torch.float32,
+        )
+        self.global_bias = nn.Parameter(ratings_tensor.mean())
+
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(self.dropout_prob)
         self.loss_fn = nn.MSELoss()
 
         self.init_weights()
+
+    def to(self, *args, **kwargs):
+        super().to(*args, **kwargs)
+        if self.word_embedding_cpu:
+            self.word_embedding.cpu()
+        return self
 
     def _get_int_config(self, key: str, default: int) -> int:
         return int(cast(Union[int, float, str], self.configs.get(key, default)))
@@ -117,6 +133,11 @@ class NARRE(AbstractRec):
                     with torch.no_grad():
                         module.weight[module.padding_idx].fill_(0.0)
 
+    def _lookup_embedding(self, tokens: torch.Tensor) -> torch.Tensor:
+        if self.word_embedding_cpu:
+            return cast(torch.Tensor, self.word_embedding(tokens.cpu())).to(tokens.device)
+        return cast(torch.Tensor, self.word_embedding(tokens))
+
     def _encode_reviews(self, review_tokens: torch.Tensor, conv: nn.Conv1d) -> torch.Tensor:
         if review_tokens.dim() != 3:
             raise ValueError("Expected review tokens with shape [B, R, L].")
@@ -132,11 +153,10 @@ class NARRE(AbstractRec):
             )
 
         review_input = review_tokens.reshape(batch_size * review_count, review_length)
-        embedded = cast(torch.Tensor, self.word_embedding(review_input))
+        embedded = self._lookup_embedding(review_input)
         embedded = cast(torch.Tensor, embedded.transpose(1, 2))
         conv_out = cast(torch.Tensor, self.relu(conv(embedded)))
         pooled = cast(torch.Tensor, torch.amax(conv_out, dim=2))
-        pooled = cast(torch.Tensor, self.dropout(pooled))
         return pooled.reshape(batch_size, review_count, self.kernel_count)
 
     def _masked_attention(
@@ -214,10 +234,11 @@ class NARRE(AbstractRec):
         user_feature = user_feature + cast(torch.Tensor, self.user_id_embedding(user_id))
         item_feature = item_feature + cast(torch.Tensor, self.item_id_embedding(item_id))
 
-        interaction = user_feature * item_feature
+        interaction = self.relu(user_feature * item_feature)
         rating = cast(torch.Tensor, self.predict_layer(self.dropout(interaction)))
         rating = rating + cast(torch.Tensor, self.user_bias(user_id))
         rating = rating + cast(torch.Tensor, self.item_bias(item_id))
+        rating = rating + self.global_bias
         return rating
 
     def cal_loss(
