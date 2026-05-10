@@ -49,7 +49,7 @@ class NARRE(AbstractRec):
             padding_idx=self.pad_idx,
         )
         # Keep large embedding on CPU to avoid OOM with 300d GoogleNews
-        self.word_embedding_cpu = bool(configs.get("word_embedding_cpu", True))
+        self.word_embedding_cpu = bool(configs.get("word_embedding_cpu", False))
         if self.word_embedding_cpu:
             self.word_embedding.cpu()
 
@@ -104,6 +104,17 @@ class NARRE(AbstractRec):
         self.loss_fn = nn.MSELoss()
 
         self.init_weights()
+
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        embed_params = self.word_embedding.weight.numel()
+        embed_trainable = self.word_embedding.weight.requires_grad
+        print(
+            "NARRE parameters: total={}, trainable={}, "
+            "word_embedding={} (trainable={})".format(
+                total_params, trainable_params, embed_params, embed_trainable,
+            )
+        )
 
     def to(self, *args, **kwargs):
         super().to(*args, **kwargs)

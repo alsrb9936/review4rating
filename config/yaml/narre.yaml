@@ -11,8 +11,8 @@ kernel_size: 3
 id_dim: 32
 attention_size: 32
 dropout_prob: 0.5
-freeze_word_embedding: false
-word_embedding_cpu: true
+freeze_word_embedding: true
+word_embedding_cpu: false
 retain_rui: false
 lr_decay: 0.95
 min_rating: 1.0
