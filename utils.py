@@ -98,7 +98,7 @@ def load_interaction_data(configs):
         non_empty_idx = [i for i, text in enumerate(inter_df["reviewText"].tolist()) if text]
         if non_empty_idx:
             non_empty_texts = [inter_df.iloc[i]["reviewText"] for i in non_empty_idx]
-            predicted_embeddings = get_embedding_batch(model_name, non_empty_texts, batch_size=32, gpu_id=gpu_id)
+            predicted_embeddings = get_embedding_batch(model_name, non_empty_texts, batch_size=8, gpu_id=gpu_id)
 
             for idx, emb in zip(non_empty_idx, predicted_embeddings):
                 review_embeddings[idx] = emb

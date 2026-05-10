@@ -241,7 +241,6 @@ class IARDRMTrainer(BaseTrainer):
         all_yS = []
         all_yR = []
         edge_index, edge_weight = self._get_graph_inputs(dataloader)
-        clamp_eval_pred = bool(self.configs.get("clamp_eval_pred", True))
 
         for batch in dataloader:
             user_ids = batch["user_ids"].to(self.device)
@@ -257,8 +256,6 @@ class IARDRMTrainer(BaseTrainer):
                 edge_weight=edge_weight,
             )
             predictions = output["pred"]
-            if clamp_eval_pred:
-                predictions = predictions.clamp(self.min_rating, self.max_rating)
 
             all_predictions.append(predictions.detach().cpu().numpy())
             all_ratings.append(ratings.detach().cpu().numpy())

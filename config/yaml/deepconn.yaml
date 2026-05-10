@@ -1,5 +1,5 @@
 basemodel: "deepconn"
-glove_path: "/home/infolab/mnt/mingyu/review_rec/rating4review/cached/others/glove.6B.50d.txt"
+glove_path: "/home/infolab/mnt/mingyu/review_rec/cached/others/glove.6B.50d.txt"
 batch: 128
 epoch: 200
 lr: 0.001
