@@ -29,29 +29,41 @@ class NARRE(AbstractRec):
         self.num_items = int(getattr(train_dataset, "num_items"))
         self.pad_idx = int(getattr(train_dataset, "pad_idx", 0))
 
-        embedding_weight = torch.as_tensor(
-            getattr(train_dataset, "embedding_matrix"),
+        user_embedding_weight = torch.as_tensor(
+            getattr(train_dataset, "user_embedding_matrix"),
             dtype=torch.float32,
         )
-        if embedding_weight.size(1) != self.word_dim:
+        item_embedding_weight = torch.as_tensor(
+            getattr(train_dataset, "item_embedding_matrix"),
+            dtype=torch.float32,
+        )
+        if user_embedding_weight.size(1) != self.word_dim:
             raise ValueError(
                 "Configured word_dim={} does not match embedding dim={}".format(
                     self.word_dim,
-                    embedding_weight.size(1),
+                    user_embedding_weight.size(1),
+                )
+            )
+        if item_embedding_weight.size(1) != self.word_dim:
+            raise ValueError(
+                "Configured word_dim={} does not match embedding dim={}".format(
+                    self.word_dim,
+                    item_embedding_weight.size(1),
                 )
             )
 
         conv_padding = (self.kernel_size - 1) // 2
 
-        self.word_embedding = nn.Embedding.from_pretrained(
-            embedding_weight,
-            freeze=bool(configs.get("freeze_word_embedding", False)),
+        self.user_word_embedding = nn.Embedding.from_pretrained(
+            user_embedding_weight,
+            freeze=False,
             padding_idx=self.pad_idx,
         )
-        # Keep large embedding on CPU to avoid OOM with 300d GoogleNews
-        self.word_embedding_cpu = bool(configs.get("word_embedding_cpu", False))
-        if self.word_embedding_cpu:
-            self.word_embedding.cpu()
+        self.item_word_embedding = nn.Embedding.from_pretrained(
+            item_embedding_weight,
+            freeze=False,
+            padding_idx=self.pad_idx,
+        )
 
         self.user_conv = nn.Conv1d(
             in_channels=self.word_dim,
@@ -107,20 +119,24 @@ class NARRE(AbstractRec):
 
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        embed_params = self.word_embedding.weight.numel()
-        embed_trainable = self.word_embedding.weight.requires_grad
+        user_embed_params = self.user_word_embedding.weight.numel()
+        user_embed_trainable = self.user_word_embedding.weight.requires_grad
+        item_embed_params = self.item_word_embedding.weight.numel()
+        item_embed_trainable = self.item_word_embedding.weight.requires_grad
         print(
-            "NARRE parameters: total={}, trainable={}, "
-            "word_embedding={} (trainable={})".format(
-                total_params, trainable_params, embed_params, embed_trainable,
+            (
+                "NARRE parameters: total={}, trainable={}, "
+                "user_word_embedding={} (trainable={}), "
+                "item_word_embedding={} (trainable={})"
+            ).format(
+                total_params,
+                trainable_params,
+                user_embed_params,
+                user_embed_trainable,
+                item_embed_params,
+                item_embed_trainable,
             )
         )
-
-    def to(self, *args, **kwargs):
-        super().to(*args, **kwargs)
-        if self.word_embedding_cpu:
-            self.word_embedding.cpu()
-        return self
 
     def _get_int_config(self, key: str, default: int) -> int:
         return int(cast(Union[int, float, str], self.configs.get(key, default)))
@@ -138,18 +154,21 @@ class NARRE(AbstractRec):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Embedding) and module is not self.word_embedding:
+            elif isinstance(module, nn.Embedding) and module not in {
+                self.user_word_embedding,
+                self.item_word_embedding,
+            }:
                 nn.init.normal_(module.weight, mean=0.0, std=0.01)
                 if module.padding_idx is not None:
                     with torch.no_grad():
                         module.weight[module.padding_idx].fill_(0.0)
 
-    def _lookup_embedding(self, tokens: torch.Tensor) -> torch.Tensor:
-        if self.word_embedding_cpu:
-            return cast(torch.Tensor, self.word_embedding(tokens.cpu())).to(tokens.device)
-        return cast(torch.Tensor, self.word_embedding(tokens))
-
-    def _encode_reviews(self, review_tokens: torch.Tensor, conv: nn.Conv1d) -> torch.Tensor:
+    def _encode_reviews(
+        self,
+        review_tokens: torch.Tensor,
+        conv: nn.Conv1d,
+        word_embedding: nn.Embedding,
+    ) -> torch.Tensor:
         if review_tokens.dim() != 3:
             raise ValueError("Expected review tokens with shape [B, R, L].")
 
@@ -164,7 +183,7 @@ class NARRE(AbstractRec):
             )
 
         review_input = review_tokens.reshape(batch_size * review_count, review_length)
-        embedded = self._lookup_embedding(review_input)
+        embedded = cast(torch.Tensor, word_embedding(review_input))
         embedded = cast(torch.Tensor, embedded.transpose(1, 2))
         conv_out = cast(torch.Tensor, self.relu(conv(embedded)))
         pooled = cast(torch.Tensor, torch.amax(conv_out, dim=2))
@@ -202,8 +221,16 @@ class NARRE(AbstractRec):
         user_review_item_ids: torch.Tensor,
         item_review_user_ids: torch.Tensor,
     ) -> torch.Tensor:
-        user_review_features = self._encode_reviews(user_review, self.user_conv)
-        item_review_features = self._encode_reviews(item_review, self.item_conv)
+        user_review_features = self._encode_reviews(
+            user_review,
+            self.user_conv,
+            self.user_word_embedding,
+        )
+        item_review_features = self._encode_reviews(
+            item_review,
+            self.item_conv,
+            self.item_word_embedding,
+        )
 
         user_review_item_ids = user_review_item_ids.clamp(min=0, max=self.num_items)
         item_review_user_ids = item_review_user_ids.clamp(min=0, max=self.num_users)

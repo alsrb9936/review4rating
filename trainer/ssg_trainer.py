@@ -1,0 +1,179 @@
+"""SSG trainer."""
+
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportMissingParameterType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false, reportImplicitOverride=false, reportUnannotatedClassAttribute=false, reportUnusedCallResult=false
+
+import json
+import os
+
+from tqdm import tqdm
+import torch
+
+from .base_trainer import BaseTrainer
+from metric import print_results
+
+
+class SSGTrainer(BaseTrainer):
+    def __init__(self, model, train_dataloader, valid_dataloader, test_dataloader, configs):
+        super().__init__(model, train_dataloader, valid_dataloader, test_dataloader, configs)
+        self.gamma = float(configs.get("gamma", 0.95))
+        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=self.gamma)
+
+    def _prepare_inputs(self, batch):
+        user_id = batch["user_id"].to(self.device)
+        item_id = batch["item_id"].to(self.device)
+        ratings = batch["rating"].to(self.device)
+        user_review = batch["user_review"].to(self.device)
+        item_review = batch["item_review"].to(self.device)
+        user_review_item_ids = batch["user_review_item_ids"].to(self.device)
+        item_review_user_ids = batch["item_review_user_ids"].to(self.device)
+
+        user_seq_reviews = batch.get("user_seq_reviews")
+        item_seq_reviews = batch.get("item_seq_reviews")
+        user_seq_len = batch.get("user_seq_len")
+        item_seq_len = batch.get("item_seq_len")
+        user_pos_ind = batch.get("user_pos_ind")
+        item_pos_ind = batch.get("item_pos_ind")
+        user_rel_dt = batch.get("user_rel_dt")
+        item_rel_dt = batch.get("item_rel_dt")
+        user_abs_dt = batch.get("user_abs_dt")
+        item_abs_dt = batch.get("item_abs_dt")
+
+        optional_tensors = [
+            user_seq_reviews,
+            item_seq_reviews,
+            user_seq_len,
+            item_seq_len,
+            user_pos_ind,
+            item_pos_ind,
+            user_rel_dt,
+            item_rel_dt,
+            user_abs_dt,
+            item_abs_dt,
+        ]
+        optional_tensors = [tensor.to(self.device) if tensor is not None else None for tensor in optional_tensors]
+        (
+            user_seq_reviews,
+            item_seq_reviews,
+            user_seq_len,
+            item_seq_len,
+            user_pos_ind,
+            item_pos_ind,
+            user_rel_dt,
+            item_rel_dt,
+            user_abs_dt,
+            item_abs_dt,
+        ) = optional_tensors
+
+        graph_adj = batch.get("graph_adj")
+        graph_reviews = batch.get("graph_reviews")
+        graph_ratings = batch.get("graph_ratings")
+        if graph_adj is not None:
+            graph_adj = graph_adj.to(self.device)
+        if graph_reviews is not None:
+            graph_reviews = graph_reviews.to(self.device)
+        if graph_ratings is not None:
+            graph_ratings = graph_ratings.to(self.device)
+
+        return {
+            "user_id": user_id,
+            "item_id": item_id,
+            "ratings": ratings,
+            "user_review": user_review,
+            "item_review": item_review,
+            "user_review_item_ids": user_review_item_ids,
+            "item_review_user_ids": item_review_user_ids,
+            "user_seq_reviews": user_seq_reviews,
+            "item_seq_reviews": item_seq_reviews,
+            "user_seq_len": user_seq_len,
+            "item_seq_len": item_seq_len,
+            "user_pos_ind": user_pos_ind,
+            "item_pos_ind": item_pos_ind,
+            "user_rel_dt": user_rel_dt,
+            "item_rel_dt": item_rel_dt,
+            "user_abs_dt": user_abs_dt,
+            "item_abs_dt": item_abs_dt,
+            "graph_adj": graph_adj,
+            "graph_reviews": graph_reviews,
+            "graph_ratings": graph_ratings,
+        }
+
+    def train_epoch(self, epoch_idx):
+        self.model.train()
+        epoch_loss_dict = None
+
+        for batch in tqdm(self.train_dataloader, desc=f"Epoch {epoch_idx + 1}"):
+            inputs = self._prepare_inputs(batch)
+            loss, loss_dict = self.model.cal_loss(**inputs)
+
+            if epoch_loss_dict is None:
+                epoch_loss_dict = {key: 0.0 for key in loss_dict}
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+            for key in epoch_loss_dict:
+                epoch_loss_dict[key] += loss_dict[key]
+
+        if epoch_loss_dict is None:
+            return {}
+
+        for key in epoch_loss_dict:
+            epoch_loss_dict[key] /= len(self.train_dataloader)
+
+        return epoch_loss_dict
+
+    def _predict_batch(self, batch):
+        inputs = self._prepare_inputs(batch)
+        inputs.pop("ratings", None)
+        return self.model.forward(**inputs)
+
+    def train(self):
+        print(f"Starting training for {self.epoch} epochs")
+        print(f"Model: {self.model_name}")
+        print(f"Dataset: {self.dataset_name}")
+        print(f"Device: {self.device}")
+        print(f"Best metric: {self.best_metric_name}")
+
+        for epoch in range(self.epoch):
+            train_loss_dict = self.train_epoch(epoch)
+
+            log_entry = {
+                "epoch": epoch + 1,
+                "train": train_loss_dict,
+            }
+
+            print(f"Epoch {epoch + 1}/{self.epoch} - Total Loss: {train_loss_dict.get('total_loss', 0):.4f}")
+
+            if (epoch + 1) % self.eval_step == 0:
+                valid_metrics = self.evaluate(self.valid_dataloader, phase="valid")
+                log_entry["valid"] = valid_metrics
+                current_metric = valid_metrics.get(self.best_metric_name, float("inf"))
+
+                print("  Validation Metrics:")
+                print_results(valid_metrics)
+
+                if current_metric < self.best_valid_metric:
+                    self.best_valid_metric = current_metric
+                    self.patience_counter = 0
+                    self.save_checkpoint("best_model.pt")
+                    print(f"  New Best! {self.best_metric_name}: {current_metric:.4f}")
+                else:
+                    self.patience_counter += 1
+                    print(f"  Patience: {self.patience_counter}/{self.early_stop_patience}")
+
+                if self.patience_counter >= self.early_stop_patience:
+                    print(f"Early stopping triggered after {epoch + 1} epochs")
+                    self.train_log.append(log_entry)
+                    self.scheduler.step()
+                    break
+
+            self.train_log.append(log_entry)
+            self.scheduler.step()
+
+        print("Training completed!")
+        self.save_checkpoint("final_model.pt")
+        with open(os.path.join(self.result_path, "training_log.json"), "w") as f:
+            json.dump(self.train_log, f, indent=2)
+
+        return self.best_valid_metric

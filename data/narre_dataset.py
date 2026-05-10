@@ -27,7 +27,7 @@ class NARREDataset(RecDataset):
       context so the model only observes historical reviews.
     """
 
-    _glove_cache: dict[str, tuple[dict[str, int], torch.Tensor, int]] = {}
+    _glove_cache: dict[tuple[str, int, frozenset[str]], torch.Tensor] = {}
 
     review_length: int
     review_count: int
@@ -41,6 +41,8 @@ class NARREDataset(RecDataset):
     ratings: torch.Tensor
     pad_idx: int
     word_to_idx: dict[str, int]
+    user_embedding_matrix: torch.Tensor
+    item_embedding_matrix: torch.Tensor
     embedding_matrix: torch.Tensor
     interactions: list[Interaction]
     review_lookup_by_user: ReviewLookup
@@ -71,9 +73,19 @@ class NARREDataset(RecDataset):
         self.item_ids = torch.tensor(df["item_id"].tolist(), dtype=torch.long)
         self.ratings = torch.tensor(df["rating"].tolist(), dtype=torch.float32)
 
-        vocab, embedding_matrix, self.pad_idx = self._load_glove(self.glove_path, self.word_dim)
-        self.word_to_idx = vocab
-        self.embedding_matrix = embedding_matrix
+        vocab_tokens = self._collect_vocab_tokens(df)
+        self.pad_idx = 0
+        self.word_to_idx = self._build_word_to_idx(vocab_tokens)
+
+        embedding_matrix = self._load_glove(
+            self.glove_path,
+            self.word_dim,
+            vocab_tokens,
+            self.word_to_idx,
+        )
+        self.user_embedding_matrix = embedding_matrix.clone()
+        self.item_embedding_matrix = embedding_matrix.clone()
+        self.embedding_matrix = self.user_embedding_matrix
 
         self.interactions = []
         for row in df.itertuples(index=False):
@@ -108,29 +120,49 @@ class NARREDataset(RecDataset):
             )
 
     @classmethod
-    def _load_glove(cls, glove_path: str, word_dim: int) -> tuple[dict[str, int], torch.Tensor, int]:
-        cache_key = f"{glove_path}:{word_dim}"
+    def _load_glove(
+        cls,
+        glove_path: str,
+        word_dim: int,
+        vocab_tokens: set[str],
+        word_to_idx: dict[str, int],
+    ) -> torch.Tensor:
+        cache_key = (glove_path, word_dim, frozenset(vocab_tokens))
         if cache_key in cls._glove_cache:
             return cls._glove_cache[cache_key]
 
-        word_to_idx: dict[str, int] = {"<pad>": 0}
-        vectors: list[list[float]] = [[0.0] * word_dim]
+        embedding_matrix = torch.randn(len(word_to_idx), word_dim, dtype=torch.float32) * 0.01
+        embedding_matrix[0] = 0.0
 
         with open(glove_path, "r", encoding="utf-8") as glove_file:
-            for line in glove_file:
+            for line_idx, line in enumerate(glove_file):
                 parts = line.rstrip().split()
+                if line_idx == 0 and len(parts) == 2 and all(part.lstrip("+-").isdigit() for part in parts):
+                    continue
                 if len(parts) != word_dim + 1:
                     continue
                 token = parts[0]
-                if token in word_to_idx:
+                if token not in vocab_tokens:
                     continue
-                word_to_idx[token] = len(vectors)
-                vectors.append([float(value) for value in parts[1:]])
+                embedding_matrix[word_to_idx[token]] = torch.tensor([float(value) for value in parts[1:]], dtype=torch.float32)
 
-        embedding_matrix = torch.tensor(vectors, dtype=torch.float32)
-        cached_value = (word_to_idx, embedding_matrix, 0)
-        cls._glove_cache[cache_key] = cached_value
-        return cached_value
+        cls._glove_cache[cache_key] = embedding_matrix
+        return embedding_matrix
+
+    @classmethod
+    def _collect_vocab_tokens(cls, df: pd.DataFrame) -> set[str]:
+        vocab_tokens: set[str] = set()
+        for row in df.itertuples(index=False):
+            review_text = cls._normalize_text(getattr(row, "reviewText", ""))
+            vocab_tokens.update(cls._tokenize(review_text))
+        return vocab_tokens
+
+    @staticmethod
+    def _build_word_to_idx(vocab_tokens: set[str]) -> dict[str, int]:
+        word_to_idx = {"<pad>": 0}
+        for idx, token in enumerate(sorted(vocab_tokens), start=1):
+            word_to_idx[token] = idx
+        return word_to_idx
 
     @staticmethod
     def _coerce_int(value: object, default: int) -> int:
