@@ -7,7 +7,20 @@ import torch
 from .abstract_dataset import RecDataset
 
 
+# retain_rui is controlled via config (default: false in deepconn.yaml).
+# Set retain_rui: true for DeepCoNN paper reproduction mode.
+# Keep retain_rui: false for fair evaluation to avoid target-review leakage.
+
 class DeepCoNNDataset(RecDataset):
+    """DeepCoNN review-context dataset.
+
+    Two modes are supported via ``retain_rui``:
+    - ``True``: Original DeepCoNN reproduction mode. The target review is kept
+      in the user/item context, which matches the paper but introduces data leakage.
+    - ``False``: Fair evaluation mode. The target review is excluded from the
+      context to prevent leakage and is the recommended default.
+    """
+
     _glove_cache: Dict[str, Tuple[Dict[str, int], torch.Tensor, int]] = {}
 
     def __init__(self, df, configs, split="train"):
@@ -113,8 +126,12 @@ class DeepCoNNDataset(RecDataset):
 
     def _load_reviews(self, review_lookup: Dict[int, List[Tuple[int, List[int]]]], query_id: int, exclude_id: int) -> torch.Tensor:
         if self.retain_rui:
+            # Reproduction mode: keep every review for the query entity,
+            # including the current user-item interaction being predicted.
             selected_reviews = [tokens for _, tokens in review_lookup.get(int(query_id), [])]
         else:
+            # Fair mode: remove the target interaction's review from the context
+            # so the model only sees historical reviews.
             selected_reviews = [tokens for other_id, tokens in review_lookup.get(int(query_id), []) if other_id != int(exclude_id)]
         return torch.tensor(self._adjust_review_list(selected_reviews), dtype=torch.long)
 
