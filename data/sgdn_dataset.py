@@ -102,7 +102,7 @@ class SGDNDataset(RecDataset):
             },
             "item": {
                 "ci": normalize(item_in),
-                "cj": normalize(user_out) if self.symm else torch.ones(self.num_items, 1, dtype=torch.float32),
+                "cj": normalize(item_out) if self.symm else torch.ones(self.num_items, 1, dtype=torch.float32),
             },
         }
 

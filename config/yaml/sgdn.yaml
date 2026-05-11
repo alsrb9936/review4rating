@@ -24,8 +24,11 @@ model:
   use_contrastive: true
   cl_weight: 0.1
   temperature: 0.2
-  num_pos: 1
+  num_pos: 10
   num_neg: 64
+  use_review_prototypes: true
+  init_review_prototypes: true
+  debug_shapes: true
   
   # Disentanglement regularization
   disentangle_weight: 0.01

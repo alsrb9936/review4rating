@@ -255,12 +255,18 @@ def get_dataloader(train_df, valid_df, test_df, configs):
     batch_size = configs.get('batch', 256)
     eval_batch_size = configs.get('eval_batch', 4096)
     
-    # Use custom collate_fn for RGCL to handle sparse tensors
+    # Use custom collate_fn for full-graph models so DataLoader does not stack
+    # graph dictionaries and accidentally add an extra batch dimension.
     if model_name == 'rgcl':
         from data.rgcl_dataset import rgcl_collate_fn
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=rgcl_collate_fn)
         valid_dataloader = DataLoader(valid_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=rgcl_collate_fn)
         test_dataloader = DataLoader(test_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=rgcl_collate_fn)
+    elif model_name == 'sgdn':
+        from data.sgdn_dataset import sgdn_collate_fn
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=sgdn_collate_fn)
+        valid_dataloader = DataLoader(valid_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=sgdn_collate_fn)
+        test_dataloader = DataLoader(test_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=sgdn_collate_fn)
     else:
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         valid_dataloader = DataLoader(valid_dataset, batch_size=eval_batch_size, shuffle=False)

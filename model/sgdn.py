@@ -13,9 +13,17 @@ class FactorDistributionEncoder(nn.Module):
     For each edge, produces a K-way distribution over latent factors.
     """
 
-    def __init__(self, review_dim: int, embedding_size: int, num_factors: int, dropout: float):
+    def __init__(
+        self,
+        review_dim: int,
+        embedding_size: int,
+        num_factors: int,
+        dropout: float,
+        use_review_prototypes: bool,
+    ):
         super().__init__()
         self.num_factors = num_factors
+        self.use_review_prototypes = use_review_prototypes
 
         self.semantic_mlp = nn.Sequential(
             nn.Linear(review_dim, embedding_size),
@@ -35,6 +43,13 @@ class FactorDistributionEncoder(nn.Module):
             nn.Linear(embedding_size, 1),
             nn.Sigmoid(),
         )
+        if use_review_prototypes:
+            self.prototype_gate = nn.Sequential(
+                nn.Linear(review_dim + embedding_size * 2, embedding_size),
+                nn.GELU(),
+                nn.Linear(embedding_size, 1),
+                nn.Sigmoid(),
+            )
 
     def forward(
         self,
@@ -43,6 +58,7 @@ class FactorDistributionEncoder(nn.Module):
         item_emb: torch.Tensor,
         user_ids: torch.Tensor,
         item_ids: torch.Tensor,
+        review_prototypes: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Return (num_edges, num_factors) softmax distribution."""
         u_feat = user_emb[user_ids]
@@ -54,8 +70,18 @@ class FactorDistributionEncoder(nn.Module):
         gate_input = torch.cat([review_feat, u_feat, i_feat], dim=1)
         alpha = self.gate(gate_input)
 
-        combined = alpha * semantic_logits + (1 - alpha) * structural_logits
-        return F.softmax(combined, dim=1)
+        combined_logits = alpha * semantic_logits + (1 - alpha) * structural_logits
+        combined = F.softmax(combined_logits, dim=1)
+
+        if self.use_review_prototypes and review_prototypes is not None:
+            review_norm = F.normalize(review_feat, dim=1)
+            proto_norm = F.normalize(review_prototypes, dim=1)
+            prototype_dist = F.softmax(review_norm @ proto_norm.T / 0.5, dim=1)
+            proto_alpha = self.prototype_gate(gate_input)
+            combined = proto_alpha * prototype_dist + (1 - proto_alpha) * combined
+            combined = combined / combined.sum(dim=1, keepdim=True).clamp_min(1e-8)
+
+        return combined
 
 
 class FactorizedMessagePassing(nn.Module):
@@ -90,9 +116,9 @@ class FactorizedMessagePassing(nn.Module):
         self,
         user_emb: torch.Tensor,
         item_emb: torch.Tensor,
-        encoder_data: dict,
-        norm_factors: dict,
-        factor_dist: Optional[dict] = None,
+        encoder_data: Dict[str, Dict[str, torch.Tensor]],
+        norm_factors: Dict[str, Dict[str, torch.Tensor]],
+        factor_dist: Optional[Dict[str, torch.Tensor]] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return (num_users, out_feats), (num_items, out_feats), factor_reps."""
         num_users = user_emb.size(0)
@@ -125,7 +151,7 @@ class FactorizedMessagePassing(nn.Module):
                 src_feat_i = user_emb[edge_users] @ u_transform
 
                 msg_u = (src_feat_u * edge_factor_weight) * norm_factors["item"]["cj"][edge_items]
-                msg_i = (src_feat_i * edge_factor_weight) * norm_factors["user"]["cj"][edge_items]
+                msg_i = (src_feat_i * edge_factor_weight) * norm_factors["user"]["cj"][edge_users]
 
                 u_factor.index_add_(0, edge_users, msg_u)
                 i_factor.index_add_(0, edge_items, msg_i)
@@ -146,41 +172,54 @@ class FactorizedMessagePassing(nn.Module):
 
 
 class SGDNContrastiveLoss(nn.Module):
-    """Intent-aware contrastive loss across factors (InfoNCE)."""
+    """Intent-aware contrastive loss using factor/interaction distributions.
 
-    def __init__(self, embedding_size: int, temperature: float = 0.2):
+    This follows the original SGDN `cal_c_loss` idea: two stochastic forward
+    views produce interaction representations, and positives are selected by
+    top-k similarity in the interaction distribution (`int_dist`) rather than
+    by identity alone.
+    """
+
+    def __init__(self, embedding_size: int, temperature: float = 0.2, num_pos: int = 1, num_neg: int = 64):
         super().__init__()
         self.temperature = temperature
+        self.num_pos = num_pos
+        self.num_neg = num_neg
         self.proj = nn.Linear(embedding_size, embedding_size)
 
     def forward(
         self,
-        user_factor_reps: torch.Tensor,
-        item_factor_reps: torch.Tensor,
-        user_ids: torch.Tensor,
-        item_ids: torch.Tensor,
+        interaction_view1: torch.Tensor,
+        interaction_view2: torch.Tensor,
+        int_dist: torch.Tensor,
+        labels: torch.Tensor,
     ) -> torch.Tensor:
-        """user_factor_reps: (num_factors, num_users, d), item_factor_reps: (num_factors, num_items, d)."""
-        num_factors = user_factor_reps.size(0)
-        batch_size = user_ids.size(0)
+        z1 = F.normalize(self.proj(interaction_view1), dim=1)
+        z2 = F.normalize(self.proj(interaction_view2), dim=1)
+        int_dist = F.normalize(int_dist, dim=1)
 
-        u_proj = self.proj(user_factor_reps)
-        i_proj = self.proj(item_factor_reps)
-
-        u_batch = u_proj[:, user_ids]
-        i_batch = i_proj[:, item_ids]
-
-        total_loss = u_batch.new_tensor(0.0)
+        total_loss = z1.new_tensor(0.0)
         count = 0
 
-        for k in range(num_factors):
-            u_k = u_batch[k]
-            i_k = i_batch[k]
+        for label in labels.unique(sorted=True):
+            group_idx = torch.where(labels == label)[0]
+            group_size = int(group_idx.numel())
+            if group_size < 2:
+                continue
 
-            sim_matrix = u_k @ i_k.T / self.temperature
+            group_z1 = z1[group_idx]
+            group_z2 = z2[group_idx]
+            group_dist = int_dist[group_idx]
+            k_pos = min(self.num_pos, group_size)
+            k_neg = min(self.num_neg, group_size)
 
-            labels = torch.arange(batch_size, device=u_k.device)
-            loss = F.cross_entropy(sim_matrix, labels)
+            intent_sim = group_dist @ group_dist.T
+            _, pos_idx = torch.topk(intent_sim, k=k_pos, dim=1)
+            pos_score = torch.exp((group_z1.unsqueeze(1) * group_z2[pos_idx]).sum(dim=2) / self.temperature).sum(dim=1)
+
+            neg_idx = torch.randperm(group_size, device=z1.device)[:k_neg]
+            ttl_score = torch.exp((group_z1 @ group_z2[neg_idx].T) / self.temperature).sum(dim=1)
+            loss = -torch.log(pos_score / ttl_score.clamp_min(1e-8)).mean()
             total_loss = total_loss + loss
             count += 1
 
@@ -233,28 +272,39 @@ class SGDN(AbstractRec):
         self.cl_weight = float(configs.get("cl_weight", 0.1))
         self.disentangle_weight = float(configs.get("disentangle_weight", 0.01))
         self.temperature = float(configs.get("temperature", 0.2))
+        self.num_pos = int(configs.get("num_pos", 1))
+        self.num_neg = int(configs.get("num_neg", 64))
+        self.use_review_prototypes = bool(configs.get("use_review_prototypes", True))
+        self.init_review_prototypes = bool(configs.get("init_review_prototypes", True))
+        self.debug_shapes = bool(configs.get("debug_shapes", False))
         self.classification = bool(configs.get("classification", True))
         self.rating_vals = [int(v) for v in configs.get("rating_values", [1, 2, 3, 4, 5])]
+        self._shape_logged = False
 
         self.user_embedding = nn.Embedding(self.num_users, self.embedding_size)
         self.item_embedding = nn.Embedding(self.num_items, self.embedding_size)
+        self.review_prototypes = nn.Parameter(torch.empty(self.num_factors, self.review_dim))
 
         self.factor_dist_encoder = FactorDistributionEncoder(
             review_dim=self.review_dim,
             embedding_size=self.embedding_size,
             num_factors=self.num_factors,
             dropout=self.dropout,
+            use_review_prototypes=self.use_review_prototypes,
         )
 
+        layer_dims = [self.embedding_size] + [self.hidden_dim] * self.num_layers
         self.mp_layers = nn.ModuleList(
-            FactorizedMessagePassing(
+            [
+                FactorizedMessagePassing(
                 num_factors=self.num_factors,
-                in_feats=self.embedding_size,
-                out_feats=self.hidden_dim,
+                    in_feats=layer_dims[layer_idx],
+                    out_feats=layer_dims[layer_idx + 1],
                 review_dim=self.review_dim,
                 dropout=self.dropout,
             )
-            for _ in range(self.num_layers)
+                for layer_idx in range(self.num_layers)
+            ]
         )
 
         self.rating_predictor = nn.Sequential(
@@ -265,18 +315,44 @@ class SGDN(AbstractRec):
         )
 
         self.contrastive_loss = SGDNContrastiveLoss(
-            embedding_size=self.hidden_dim,
+            embedding_size=self.hidden_dim * 2,
             temperature=self.temperature,
+            num_pos=self.num_pos,
+            num_neg=self.num_neg,
         )
         self.disentangle_reg = DisentangleRegularization()
 
         self.rating_loss_fn = nn.CrossEntropyLoss() if self.classification else nn.MSELoss()
 
         self._init_embeddings()
+        if self.use_review_prototypes and self.init_review_prototypes:
+            self._init_review_prototypes(train_dataset)
 
     def _init_embeddings(self):
         nn.init.xavier_uniform_(self.user_embedding.weight)
         nn.init.xavier_uniform_(self.item_embedding.weight)
+        nn.init.xavier_uniform_(self.review_prototypes)
+
+    def _init_review_prototypes(self, train_dataset) -> None:
+        review_feat = getattr(train_dataset, "decoder_review_feat", None)
+        if not isinstance(review_feat, torch.Tensor) or review_feat.numel() == 0:
+            return
+        try:
+            from sklearn.cluster import KMeans
+
+            num_clusters = min(self.num_factors, review_feat.size(0))
+            kmeans = KMeans(n_clusters=num_clusters, random_state=int(self.configs.get("seed", 42)))
+            kmeans.fit(review_feat.detach().cpu().numpy())
+            centroids = torch.as_tensor(kmeans.cluster_centers_, dtype=self.review_prototypes.dtype)
+            if num_clusters < self.num_factors:
+                pad = self.review_prototypes.detach().cpu()[num_clusters:]
+                centroids = torch.cat([centroids, pad], dim=0)
+            with torch.no_grad():
+                self.review_prototypes.copy_(F.normalize(centroids, dim=1))
+            print(f"SGDN initialized review prototypes with KMeans: {tuple(self.review_prototypes.shape)}")
+        except Exception as exc:
+            # Optional author-code alignment path; random prototypes remain valid.
+            print(f"SGDN review prototype KMeans init skipped: {exc}")
 
     def _to_device(self, value, device):
         if isinstance(value, torch.Tensor):
@@ -292,6 +368,41 @@ class SGDN(AbstractRec):
             raise TypeError("SGDN expects batch data as a dictionary.")
         return prepared
 
+    def _compute_factor_dist(self, review_feat, user_emb, item_emb, user_ids, item_ids):
+        return self.factor_dist_encoder(
+            review_feat=review_feat,
+            user_emb=user_emb,
+            item_emb=item_emb,
+            user_ids=user_ids,
+            item_ids=item_ids,
+            review_prototypes=self.review_prototypes if self.use_review_prototypes else None,
+        )
+
+    def _assert_and_log_shapes(self, batch, encoder_factor_dist, int_dist, user_factor_reps, item_factor_reps):
+        assert int_dist.dim() == 2 and int_dist.size(1) == self.num_factors, f"int_dist shape mismatch: {tuple(int_dist.shape)}"
+        assert user_factor_reps.shape == (self.num_factors, self.num_users, self.hidden_dim), tuple(user_factor_reps.shape)
+        assert item_factor_reps.shape == (self.num_factors, self.num_items, self.hidden_dim), tuple(item_factor_reps.shape)
+        for node_type in ("user", "item"):
+            for norm_name in ("ci", "cj"):
+                assert batch["norm_factors"][node_type][norm_name].dim() == 2
+        if self.debug_shapes and not self._shape_logged:
+            edge_shapes = {rating: tuple(data["user_ids"].shape) for rating, data in batch["encoder_data"].items()}
+            factor_shapes = {rating: tuple(dist.shape) for rating, dist in encoder_factor_dist.items()}
+            norm_shapes = {
+                node_type: {name: tuple(value.shape) for name, value in norms.items()}
+                for node_type, norms in batch["norm_factors"].items()
+            }
+            print(
+                "SGDN shape check:",
+                {
+                    "encoder_edges": edge_shapes,
+                    "norm_factors": norm_shapes,
+                    "factor_dist": factor_shapes,
+                    "int_dist": tuple(int_dist.shape),
+                },
+            )
+            self._shape_logged = True
+
     def encode(self, encoder_data, norm_factors, decoder_user_ids, decoder_item_ids, decoder_review_feat):
         user_emb = self.user_embedding.weight
         item_emb = self.item_embedding.weight
@@ -299,13 +410,7 @@ class SGDN(AbstractRec):
         # Compute factor distribution per encoder edge group
         encoder_factor_dist = {}
         for rating_key, edge_data in encoder_data.items():
-            fd = self.factor_dist_encoder(
-                review_feat=edge_data["review_feat"],
-                user_emb=user_emb,
-                item_emb=item_emb,
-                user_ids=edge_data["user_ids"],
-                item_ids=edge_data["item_ids"],
-            )
+            fd = self._compute_factor_dist(edge_data["review_feat"], user_emb, item_emb, edge_data["user_ids"], edge_data["item_ids"])
             encoder_factor_dist[rating_key] = fd
 
         user_out = user_emb
@@ -326,11 +431,12 @@ class SGDN(AbstractRec):
 
         user_factor_reps = torch.stack(all_user_factor_reps, dim=0).mean(dim=0)
         item_factor_reps = torch.stack(all_item_factor_reps, dim=0).mean(dim=0)
+        int_dist = self._compute_factor_dist(decoder_review_feat, user_emb, item_emb, decoder_user_ids, decoder_item_ids)
 
-        return user_out, item_out, user_factor_reps, item_factor_reps
+        return user_out, item_out, user_factor_reps, item_factor_reps, encoder_factor_dist, int_dist
 
     def _forward_once(self, batch: Dict[str, Any]):
-        user_out, item_out, user_factor_reps, item_factor_reps = self.encode(
+        user_out, item_out, user_factor_reps, item_factor_reps, encoder_factor_dist, int_dist = self.encode(
             encoder_data=batch["encoder_data"],
             norm_factors=batch["norm_factors"],
             decoder_user_ids=batch["decoder_user_ids"],
@@ -342,8 +448,9 @@ class SGDN(AbstractRec):
         i_decoded = item_out[batch["decoder_item_ids"]]
         interaction = torch.cat([u_decoded, i_decoded], dim=1)
         pred_ratings = self.rating_predictor(interaction)
+        self._assert_and_log_shapes(batch, encoder_factor_dist, int_dist, user_factor_reps, item_factor_reps)
 
-        return pred_ratings, user_factor_reps, item_factor_reps
+        return pred_ratings, user_factor_reps, item_factor_reps, interaction, int_dist
 
     def _rating_loss(self, pred_ratings: torch.Tensor, batch: Dict[str, Any]) -> torch.Tensor:
         if self.classification:
@@ -354,20 +461,26 @@ class SGDN(AbstractRec):
         batch_data = args[0] if args else kwargs["batch_data"]
         batch = self._prepare_batch(batch_data)
 
-        pred_ratings, user_factor_reps, item_factor_reps = self._forward_once(batch)
-        rating_loss = self._rating_loss(pred_ratings, batch)
+        pred_ratings1, user_factor_reps1, item_factor_reps1, interaction1, int_dist1 = self._forward_once(batch)
+        if self.use_contrastive:
+            pred_ratings2, _, _, interaction2, _ = self._forward_once(batch)
+            rating_loss = (self._rating_loss(pred_ratings1, batch) + self._rating_loss(pred_ratings2, batch)) / 2
+        else:
+            pred_ratings2 = None
+            interaction2 = None
+            rating_loss = self._rating_loss(pred_ratings1, batch)
 
         cl_loss = rating_loss.new_tensor(0.0)
         disentangle_loss = rating_loss.new_tensor(0.0)
 
         if self.use_contrastive:
             cl_loss = self.contrastive_loss(
-                user_factor_reps=user_factor_reps,
-                item_factor_reps=item_factor_reps,
-                user_ids=batch["decoder_user_ids"],
-                item_ids=batch["decoder_item_ids"],
+                interaction_view1=interaction1,
+                interaction_view2=interaction2,
+                int_dist=int_dist1,
+                labels=batch["labels"],
             )
-            disentangle_loss = self.disentangle_reg(user_factor_reps, item_factor_reps)
+            disentangle_loss = self.disentangle_reg(user_factor_reps1, item_factor_reps1)
 
         total_loss = (
             rating_loss
@@ -385,7 +498,7 @@ class SGDN(AbstractRec):
 
     def predict_ratings(self, batch_data):
         batch = self._prepare_batch(batch_data)
-        pred_ratings, _, _ = self._forward_once(batch)
+        pred_ratings, _, _, _, _ = self._forward_once(batch)
         if self.classification:
             probs = F.softmax(pred_ratings, dim=1)
             rating_vals = pred_ratings.new_tensor(self.rating_vals, dtype=torch.float32)
