@@ -1,4 +1,5 @@
 basemodel: "ssg"
+review_input_mode: "token"
 glove_path: "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt"
 batch: 100
 epoch: 6

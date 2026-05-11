@@ -47,10 +47,25 @@ class RGCLTrainer(BaseTrainer):
             all_predictions.append(predictions.detach().cpu().numpy())
             all_ratings.append(ratings.cpu().numpy())
 
+        if not all_ratings:
+            empty = np.array([], dtype=np.float64)
+            return self._build_eval_metrics(empty, empty, phase=phase)
+
         predictions = np.concatenate(all_predictions)
         ratings = np.concatenate(all_ratings)
 
-        return self._build_metrics(predictions, ratings)
+        metrics = self._build_eval_metrics(predictions, ratings, phase=phase)
+
+        if phase == "test":
+            raw = predictions
+            if self.eval_clip:
+                clipped = np.clip(raw, self.min_rating, self.max_rating)
+            else:
+                clipped = raw
+            print(f"[RGCL Test] raw_pred: min={raw.min():.4f}, max={raw.max():.4f}, mean={raw.mean():.4f}")
+            print(f"[RGCL Test] eval_clip={self.eval_clip}, final_pred: min={clipped.min():.4f}, max={clipped.max():.4f}, mean={clipped.mean():.4f}")
+
+        return metrics
 
     def _predict_batch(self, batch):
         return self.model.predict_ratings(batch)

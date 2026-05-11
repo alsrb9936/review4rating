@@ -7,7 +7,7 @@ import json
 
 from config import Config
 from model import MODEL_DICT
-from utils import attach_bert_whitening_review_features, set_seed, load_interaction_data, split_by_ratio, get_dataloader
+from utils import attach_bert_whitening_review_features, set_seed, load_interaction_data, split_by_ratio, split_by_reviewgraph, get_dataloader
 from trainer import MODEL_TRAINER_DICT
 from metric import print_results
 
@@ -121,6 +121,7 @@ def args_parser():
     parser.add_argument("--review_input_mode", type=str, default=None, choices=["token", "embedding"], help="SSG review input mode")
     parser.add_argument("--ssg_preset", type=str, default=None, choices=["custom", "set_only", "set_sequence", "set_graph", "full", "no_decov"], help="SSG ablation preset")
     parser.add_argument("--overfit_n", type=int, default=None, help="Train on only N interactions for overfit debugging")
+    parser.add_argument("--split_protocol", type=str, default=None, choices=["default", "reviewgraph"], help="Data split protocol")
     parser.add_argument("--loss_preset", type=str, default=None, help="IARD loss preset: rating_only, review_fusion, align_only, full_iard, full_no_sep, full_no_residual_pred, full_fixed_gate, full_eta_0_3, full_low_align")
     parser.add_argument("--eval_clip", type=str_to_bool, default=None, help="Clip validation/test predictions to [min_rating, max_rating]")
     parser.add_argument("--drop_cold_start_eval", type=str_to_bool, default=None, help="Drop valid/test rows with users/items unseen in train")
@@ -197,7 +198,11 @@ def diagnose_and_filter_cold_start(train_df, valid_df, test_df, configs):
 def prepare_data(configs):
     print("prepare data")
     inter_df = load_interaction_data(configs)
-    train_df, valid_df, test_df = split_by_ratio(inter_df, random_state=configs.get('seed', 42))
+    split_protocol = configs.get('split_protocol', 'default')
+    if split_protocol == 'reviewgraph':
+        train_df, valid_df, test_df = split_by_reviewgraph(inter_df, seed=configs.get('seed', 42))
+    else:
+        train_df, valid_df, test_df = split_by_ratio(inter_df, random_state=configs.get('seed', 42))
     overfit_n = int(configs.get('overfit_n', 0) or 0)
     if overfit_n > 0:
         overfit_n = min(overfit_n, len(train_df))
@@ -300,6 +305,8 @@ def eval_mode(args):
         configs['review_input_mode'] = args.review_input_mode
     if args.ssg_preset is not None:
         configs['ssg_preset'] = args.ssg_preset
+    if args.split_protocol is not None:
+        configs['split_protocol'] = args.split_protocol
     if args.overfit_n is not None:
         configs['overfit_n'] = args.overfit_n
     if args.loss_preset is not None:
@@ -374,6 +381,7 @@ def main():
         'bert_whitening_dim': args.bert_whitening_dim,
         'review_input_mode': args.review_input_mode,
         'ssg_preset': args.ssg_preset,
+        'split_protocol': args.split_protocol,
         'overfit_n': args.overfit_n,
         'loss_preset': args.loss_preset,
         'eval_clip': args.eval_clip,

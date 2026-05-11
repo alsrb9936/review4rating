@@ -4,9 +4,11 @@
 
 import json
 import os
+from typing import Any
 
-from tqdm import tqdm
+import numpy as np
 import torch
+from tqdm import tqdm
 
 from .base_trainer import BaseTrainer
 from metric import print_results
@@ -127,6 +129,48 @@ class SSGTrainer(BaseTrainer):
         inputs = self._prepare_inputs(batch)
         inputs.pop("rating", None)
         return self.model.forward(**inputs)
+
+    @torch.no_grad()
+    def evaluate(self, dataloader, phase="valid"):
+        self.model.eval()
+        all_predictions = []
+        all_ratings = []
+
+        for batch in dataloader:
+            predictions = self._predict_batch(batch).view(-1)
+            all_predictions.append(predictions.cpu().numpy())
+            all_ratings.append(batch["rating"].cpu().numpy())
+
+        if not all_ratings:
+            empty = np.array([], dtype=np.float64)
+            return self._build_eval_metrics(empty, empty, phase=phase)
+
+        predictions = np.concatenate(all_predictions)
+        ratings = np.concatenate(all_ratings)
+
+        test_clip = getattr(self.model, "test_clip", False)
+        train_clip = getattr(self.model, "train_clip", False)
+        model_clip = test_clip if phase != "train" else train_clip
+
+        if model_clip:
+            clipped = np.clip(predictions, self.min_rating, self.max_rating)
+        else:
+            clipped = predictions
+
+        metrics = self._build_eval_metrics(predictions, ratings, phase=phase)
+        metrics.update({
+            "pred_min": float(np.min(predictions)),
+            "pred_max": float(np.max(predictions)),
+            "clipped_pred_min": float(np.min(clipped)),
+            "clipped_pred_max": float(np.max(clipped)),
+            "ssg_model_clip_applied": bool(model_clip),
+        })
+
+        if phase == "test":
+            print(f"[SSG Test] raw_pred: min={predictions.min():.4f}, max={predictions.max():.4f}, mean={predictions.mean():.4f}")
+            print(f"[SSG Test] ssg_model_clip={model_clip}, clipped_pred: min={clipped.min():.4f}, max={clipped.max():.4f}, mean={clipped.mean():.4f}")
+
+        return metrics
 
     def train(self):
         print(f"Starting training for {self.epoch} epochs")

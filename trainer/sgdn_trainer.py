@@ -34,7 +34,21 @@ class SGDNTrainer(BaseTrainer):
             return {}
 
         num_batches = max(len(self.train_dataloader), 1)
-        return {key: value / num_batches for key, value in epoch_loss_dict.items()}
+        avg = {key: value / num_batches for key, value in epoch_loss_dict.items()}
+
+        cl_weight = float(self.configs.get("cl_weight", 0.1))
+        disentangle_weight = float(self.configs.get("disentangle_weight", 0.01))
+        if "cl_loss" in avg:
+            avg["weighted_cl_loss"] = avg["cl_loss"] * cl_weight
+        if "disentangle_loss" in avg:
+            avg["weighted_disentangle_loss"] = avg["disentangle_loss"] * disentangle_weight
+
+        print(f"  [SGDN Losses] rating={avg.get('rating_loss', 0):.4f}, "
+              f"cl={avg.get('cl_loss', 0):.4f} (w={avg.get('weighted_cl_loss', 0):.4f}), "
+              f"disentangle={avg.get('disentangle_loss', 0):.4f} (w={avg.get('weighted_disentangle_loss', 0):.4f}), "
+              f"total={avg.get('total_loss', 0):.4f}")
+
+        return avg
 
     def evaluate(self, dataloader, phase="valid"):
         self.model.eval()
@@ -47,10 +61,25 @@ class SGDNTrainer(BaseTrainer):
             all_predictions.append(predictions.detach().cpu().numpy())
             all_ratings.append(ratings.cpu().numpy())
 
+        if not all_ratings:
+            empty = np.array([], dtype=np.float64)
+            return self._build_eval_metrics(empty, empty, phase=phase)
+
         predictions = np.concatenate(all_predictions)
         ratings = np.concatenate(all_ratings)
 
-        return self._build_metrics(predictions, ratings)
+        metrics = self._build_eval_metrics(predictions, ratings, phase=phase)
+
+        if phase == "test":
+            raw = predictions
+            if self.eval_clip:
+                clipped = np.clip(raw, self.min_rating, self.max_rating)
+            else:
+                clipped = raw
+            print(f"[SGDN Test] raw_pred: min={raw.min():.4f}, max={raw.max():.4f}, mean={raw.mean():.4f}")
+            print(f"[SGDN Test] eval_clip={self.eval_clip}, final_pred: min={clipped.min():.4f}, max={clipped.max():.4f}, mean={clipped.mean():.4f}")
+
+        return metrics
 
     def _predict_batch(self, batch):
         return self.model.predict_ratings(batch)

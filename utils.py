@@ -273,6 +273,69 @@ def normalize_review_text(text: object) -> str:
     normalized = str(text).strip()
     return normalized
     
+def split_by_reviewgraph(df, seed=42):
+    """ReviewGraph-style split: shuffle, first 10% valid, next 10% test, remaining 80% train.
+
+    Migrate valid/test rows with unseen user_id/item_id back to train.
+    """
+    shuffled = df.sample(frac=1, random_state=seed).reset_index(drop=True)
+    n = len(shuffled)
+    n_valid = max(1, int(n * 0.1))
+    n_test = max(1, int(n * 0.1))
+
+    valid_df = shuffled.iloc[:n_valid].reset_index(drop=True)
+    test_df = shuffled.iloc[n_valid:n_valid + n_test].reset_index(drop=True)
+    train_df = shuffled.iloc[n_valid + n_test:].reset_index(drop=True)
+
+    def _log_sizes(name, tr, va, te):
+        def _stats(frame, label):
+            if len(frame) == 0:
+                return f"{label}: n=0"
+            return (f"{label}: n={len(frame)}, "
+                    f"rating_mean={frame['rating'].mean():.4f}, "
+                    f"rating_std={frame['rating'].std():.4f}, "
+                    f"distribution={dict(frame['rating'].value_counts().sort_index())}")
+        print(f"[ReviewGraph Split] {name}:")
+        print(f"  {_stats(tr, 'train')}")
+        print(f"  {_stats(va, 'valid')}")
+        print(f"  {_stats(te, 'test')}")
+
+    _log_sizes("before migration", train_df, valid_df, test_df)
+
+    train_users = set(train_df["user_id"].tolist())
+    train_items = set(train_df["item_id"].tolist())
+
+    def _migrate(split_df, split_name):
+        nonlocal train_df
+        moved = []
+        kept = []
+        for _, row in split_df.iterrows():
+            if row["user_id"] not in train_users or row["item_id"] not in train_items:
+                moved.append(row)
+            else:
+                kept.append(row)
+        if moved:
+            moved_df = pd.DataFrame(moved).reset_index(drop=True)
+            train_df = pd.concat([train_df, moved_df], ignore_index=True)
+            train_users.update(moved_df["user_id"].tolist())
+            train_items.update(moved_df["item_id"].tolist())
+            print(f"[ReviewGraph Split] Moved {len(moved_df)} rows from {split_name} -> train "
+                  f"(unseen user/item)")
+        return pd.DataFrame(kept).reset_index(drop=True) if kept else pd.DataFrame(columns=split_df.columns)
+
+    # Iterative migration: repeat until no more migrations
+    max_iter = 20
+    for iteration in range(max_iter):
+        prev_train_len = len(train_df)
+        valid_df = _migrate(valid_df, "valid")
+        test_df = _migrate(test_df, "test")
+        if len(train_df) == prev_train_len:
+            break
+
+    _log_sizes("after migration", train_df, valid_df, test_df)
+    return train_df, valid_df, test_df
+
+
 def split_by_ratio(df, train_ratio=0.8, valid_ratio=0.1, random_state=42):
     test_ratio = 1 - train_ratio - valid_ratio
 

@@ -83,6 +83,13 @@ class BaseTrainer:
         )
 
         metrics = self._build_metrics(eval_predictions, ratings)
+        abs_errors = np.abs(eval_predictions - ratings)
+
+        rating_dist = {}
+        if ratings.size > 0:
+            unique, counts = np.unique(ratings, return_counts=True)
+            rating_dist = {str(float(u)): int(c) for u, c in zip(unique, counts)}
+
         metrics.update({
             'num_samples': int(ratings.size),
             'eval_clip': bool(self.eval_clip),
@@ -94,6 +101,18 @@ class BaseTrainer:
             'clipped_prediction_max': self._range_value(eval_predictions, np.max),
             'label_min': self._range_value(ratings, np.min),
             'label_max': self._range_value(ratings, np.max),
+            'rating_mean': self._range_value(ratings, np.mean),
+            'rating_std': self._range_value(ratings, np.std),
+            'rating_distribution': rating_dist,
+            'pred_mean': self._range_value(eval_predictions, np.mean),
+            'pred_std': self._range_value(eval_predictions, np.std),
+            'pred_min': self._range_value(eval_predictions, np.min),
+            'pred_max': self._range_value(eval_predictions, np.max),
+            'abs_error_mean': self._range_value(abs_errors, np.mean),
+            'abs_error_p90': self._range_value(abs_errors, lambda x: float(np.percentile(x, 90))),
+            'abs_error_p95': self._range_value(abs_errors, lambda x: float(np.percentile(x, 95))),
+            'abs_error_p99': self._range_value(abs_errors, lambda x: float(np.percentile(x, 99))),
+            'abs_error_max': self._range_value(abs_errors, np.max),
         })
         return metrics
     

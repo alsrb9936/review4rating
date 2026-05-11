@@ -10,6 +10,67 @@
 - SSG
 - IARD-RM
 
+## Data Split Protocol
+
+The `--split_protocol` flag controls how data is split into train/valid/test:
+
+### Default (80/10/10 Random)
+
+```bash
+python main.py --model neumf --dataset Amazon_Musical_Instruments_14 --mode train
+```
+
+Standard sklearn `train_test_split` with shuffle: 80% train, 10% valid, 10% test.
+
+### ReviewGraph Protocol
+
+```bash
+python main.py --model ssg --dataset Amazon_Musical_Instruments_14 --mode train --split_protocol reviewgraph
+```
+
+Shuffle → first 10% valid, next 10% test, remaining 80% train. Rows in valid/test with user_id or item_id not seen in train are migrated to train (iteratively until stable). Split sizes and rating distributions are logged before/after migration.
+
+Use this protocol for SSG/RGCL/SGDN baseline reproduction.
+
+## Baseline Configs
+
+### SSG (Token + Word2Vec/CNN)
+
+SSG uses token/word2vec mode by default (GloVe embeddings + CNN). Config defaults:
+- `review_input_mode: "token"` (GloVe-based)
+- `ssg_preset: "full"`, `use_set_view: true`, `use_sequence_view: true`, `use_graph_view: true`
+- `train_clip: false`, `test_clip: true` (clipping only during evaluation)
+- `batch: 100`, `epoch: 6`, `lr: 0.002`, `word_dim: 300`, `latent_dim: 8`
+
+```bash
+python main.py --model ssg --dataset Amazon_Musical_Instruments_14 --mode train --split_protocol reviewgraph
+```
+
+### SGDN (Graph Disentangled)
+
+Config defaults:
+- `num_factors: 2`, `dropout: 0.8`, `lr: 0.01`, `epoch: 2000`
+- `cl_weight: 0.005`, `num_pos: 10`, `num_neg: 2048`
+- `classification: false`, `disentangle_weight: 0.0`
+- `review_dim: 64`, `debug_shapes: false`
+- `eval_clip: false` (no clipping for baseline comparison)
+
+```bash
+python main.py --model sgdn --dataset Amazon_Musical_Instruments_14 --mode train --split_protocol reviewgraph --eval_clip false
+```
+
+### RGCL (Graph Contrastive Learning)
+
+Config defaults:
+- `classification: true` (expected-rating from softmax probabilities)
+- `dropout: 0.7`, `lr: 0.01`, `epoch: 400`
+- `nd_weight: 0.3`, `ed_weight: 1.0`, `review_dim: 64`
+- Classification mode produces expected ratings in [1,5] range; eval clipping not needed.
+
+```bash
+python main.py --model rgcl --dataset Amazon_Musical_Instruments_14 --mode train --split_protocol reviewgraph
+```
+
 ## SSG Usage
 
 SSG combines set, temporal sequence, and full-graph review views for rating prediction. The dataset must include `user_id`, `item_id`, `rating`, `review`, and `timestamp` columns after the `.inter` and `.review` files are merged.
@@ -40,16 +101,16 @@ python main.py --model ssg --dataset Amazon_Musical_Instruments_14 --mode train 
 
 ### 4. Review Feature Modes
 
-Token mode uses the configured GloVe file and is the default:
+SSG uses token/word2vec mode by default (configured via GloVe). No additional flags needed:
+
+```bash
+python main.py --model ssg --dataset Amazon_Musical_Instruments_14 --mode train
+```
+
+To explicitly set token mode:
 
 ```bash
 python main.py --model ssg --dataset Amazon_Musical_Instruments_14 --mode train --review_input_mode token
-```
-
-Embedding mode uses cached or generated review embeddings, including BERT-Whitening:
-
-```bash
-python main.py --model ssg --dataset Amazon_Musical_Instruments_14 --mode train --review_feature_backend bert_whitening --review_input_mode embedding
 ```
 
 Validation and test SSG datasets reuse the train vocabulary, embedding matrix, historical interactions, and full train graph. Graph presets use a full train interaction graph, not a target-local subgraph.

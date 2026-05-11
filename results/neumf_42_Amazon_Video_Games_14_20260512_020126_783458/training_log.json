@@ -1,0 +1,442 @@
+[
+  {
+    "epoch": 1,
+    "train": {
+      "mse_loss": 2.27826265433739,
+      "total_loss": 2.27826265433739
+    },
+    "valid": {
+      "mse": 1.1544654499892621,
+      "rmse": 1.07446053905635,
+      "mae": 0.8571789286598481,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 1.0274596214294434,
+      "unclipped_prediction_max": 5.102093696594238,
+      "clipped_prediction_min": 1.0274596214294434,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 3.997322652499238,
+      "pred_std": 0.4796784482805859,
+      "pred_min": 1.0274596214294434,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.8571789286598481,
+      "abs_error_p90": 1.7170340299606321,
+      "abs_error_p95": 2.2633999586105347,
+      "abs_error_p99": 3.108910794258118,
+      "abs_error_max": 3.7520828247070312
+    }
+  },
+  {
+    "epoch": 2,
+    "train": {
+      "mse_loss": 1.0427000507815132,
+      "total_loss": 1.0427000507815132
+    },
+    "valid": {
+      "mse": 1.1296353473258425,
+      "rmse": 1.0628430492437924,
+      "mae": 0.7787475565201423,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.566585123538971,
+      "unclipped_prediction_max": 5.577404022216797,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 4.123965724144975,
+      "pred_std": 0.7065836975962162,
+      "pred_min": 1.0,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.7787475565201423,
+      "abs_error_p90": 1.7707423210144038,
+      "abs_error_p95": 2.3134701728820786,
+      "abs_error_p99": 3.2879193401336653,
+      "abs_error_max": 4.0
+    }
+  },
+  {
+    "epoch": 3,
+    "train": {
+      "mse_loss": 0.6337028648935515,
+      "total_loss": 0.6337028648935515
+    },
+    "valid": {
+      "mse": 1.1584281164588661,
+      "rmse": 1.076302985436195,
+      "mae": 0.822796782164819,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.7541652321815491,
+      "unclipped_prediction_max": 5.695113182067871,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 4.007122025145887,
+      "pred_std": 0.6923535290213154,
+      "pred_min": 1.0,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.822796782164819,
+      "abs_error_p90": 1.7560531139373774,
+      "abs_error_p95": 2.2727246046066276,
+      "abs_error_p99": 3.2114314842224116,
+      "abs_error_max": 4.0
+    }
+  },
+  {
+    "epoch": 4,
+    "train": {
+      "mse_loss": 0.3080834701760062,
+      "total_loss": 0.3080834701760062
+    },
+    "valid": {
+      "mse": 1.2019283900513225,
+      "rmse": 1.096324947290411,
+      "mae": 0.8633478254964833,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.979982852935791,
+      "unclipped_prediction_max": 5.624549865722656,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 3.942097666153674,
+      "pred_std": 0.6486980219287934,
+      "pred_min": 1.0,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.8633478254964833,
+      "abs_error_p90": 1.7772032737731924,
+      "abs_error_p95": 2.2498061895370474,
+      "abs_error_p99": 3.133075194358825,
+      "abs_error_max": 4.0
+    }
+  },
+  {
+    "epoch": 5,
+    "train": {
+      "mse_loss": 0.2065718277569475,
+      "total_loss": 0.2065718277569475
+    },
+    "valid": {
+      "mse": 1.1986397903638994,
+      "rmse": 1.0948240910593352,
+      "mae": 0.8448904214879673,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.7219147682189941,
+      "unclipped_prediction_max": 5.794800758361816,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 3.988384235542247,
+      "pred_std": 0.6817312826418597,
+      "pred_min": 1.0,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.8448904214879673,
+      "abs_error_p90": 1.802624130249023,
+      "abs_error_p95": 2.2631818175315854,
+      "abs_error_p99": 3.1794521379470773,
+      "abs_error_max": 4.0
+    }
+  },
+  {
+    "epoch": 6,
+    "train": {
+      "mse_loss": 0.17311577668477748,
+      "total_loss": 0.17311577668477748
+    },
+    "valid": {
+      "mse": 1.2167417408017276,
+      "rmse": 1.103060170979683,
+      "mae": 0.8645174770116888,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.6769070625305176,
+      "unclipped_prediction_max": 5.8563232421875,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 3.924122749066279,
+      "pred_std": 0.6931408040212614,
+      "pred_min": 1.0,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.8645174770116888,
+      "abs_error_p90": 1.7939124584197996,
+      "abs_error_p95": 2.262109339237212,
+      "abs_error_p99": 3.1249506521224877,
+      "abs_error_max": 4.0
+    }
+  },
+  {
+    "epoch": 7,
+    "train": {
+      "mse_loss": 0.15806173921659075,
+      "total_loss": 0.15806173921659075
+    },
+    "valid": {
+      "mse": 1.2250206310004965,
+      "rmse": 1.1068065011556882,
+      "mae": 0.8731746524932552,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.7673102617263794,
+      "unclipped_prediction_max": 5.931460857391357,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 3.9180897058486854,
+      "pred_std": 0.6662770246608768,
+      "pred_min": 1.0,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.8731746524932552,
+      "abs_error_p90": 1.801848793029785,
+      "abs_error_p95": 2.248955154418944,
+      "abs_error_p99": 3.112888065576553,
+      "abs_error_max": 4.0
+    }
+  },
+  {
+    "epoch": 8,
+    "train": {
+      "mse_loss": 0.1452889715905847,
+      "total_loss": 0.1452889715905847
+    },
+    "valid": {
+      "mse": 1.2243573424438368,
+      "rmse": 1.1065068198813042,
+      "mae": 0.8785558800465165,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.5834883451461792,
+      "unclipped_prediction_max": 5.781815528869629,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 3.906885577715645,
+      "pred_std": 0.6508649194413617,
+      "pred_min": 1.0,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.8785558800465165,
+      "abs_error_p90": 1.7846565723419188,
+      "abs_error_p95": 2.2406716823577875,
+      "abs_error_p99": 3.101267850399017,
+      "abs_error_max": 4.0
+    }
+  },
+  {
+    "epoch": 9,
+    "train": {
+      "mse_loss": 0.13369823958339364,
+      "total_loss": 0.13369823958339364
+    },
+    "valid": {
+      "mse": 1.2122574715940846,
+      "rmse": 1.101025645293553,
+      "mae": 0.8651810249066731,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.6499237418174744,
+      "unclipped_prediction_max": 5.9070820808410645,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 3.953887929332067,
+      "pred_std": 0.6485045924717818,
+      "pred_min": 1.0,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.8651810249066731,
+      "abs_error_p90": 1.7864473819732665,
+      "abs_error_p95": 2.2601606726646413,
+      "abs_error_p99": 3.143163862228386,
+      "abs_error_max": 4.0
+    }
+  },
+  {
+    "epoch": 10,
+    "train": {
+      "mse_loss": 0.12279146657935504,
+      "total_loss": 0.12279146657935504
+    },
+    "valid": {
+      "mse": 1.223264128316881,
+      "rmse": 1.1060127161641864,
+      "mae": 0.8834415753706466,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.7649083137512207,
+      "unclipped_prediction_max": 5.718857765197754,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 3.910011044188881,
+      "pred_std": 0.6180594971843176,
+      "pred_min": 1.0,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.8834415753706466,
+      "abs_error_p90": 1.7780078887939452,
+      "abs_error_p95": 2.246333110332488,
+      "abs_error_p99": 3.0882664585113524,
+      "abs_error_max": 4.0
+    }
+  },
+  {
+    "epoch": 11,
+    "train": {
+      "mse_loss": 0.11175396608895269,
+      "total_loss": 0.11175396608895269
+    },
+    "valid": {
+      "mse": 1.2103039155136677,
+      "rmse": 1.1001381347420276,
+      "mae": 0.8697443055503523,
+      "num_samples": 23168,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.6246535778045654,
+      "unclipped_prediction_max": 5.875916481018066,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 5.0,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.087793350219727,
+      "rating_std": 1.2071993350982666,
+      "rating_distribution": {
+        "1.0": 1514,
+        "2.0": 1348,
+        "3.0": 2826,
+        "4.0": 5382,
+        "5.0": 12098
+      },
+      "pred_mean": 3.9362015360040146,
+      "pred_std": 0.6383186453005801,
+      "pred_min": 1.0,
+      "pred_max": 5.0,
+      "abs_error_mean": 0.8697443055503523,
+      "abs_error_p90": 1.7848377227783203,
+      "abs_error_p95": 2.2502632021903985,
+      "abs_error_p99": 3.1230399560928337,
+      "abs_error_max": 4.0
+    }
+  }
+]

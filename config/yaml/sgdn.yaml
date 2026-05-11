@@ -10,29 +10,29 @@ model:
   
   # Graph convolution settings
   num_layers: 1
-  dropout: 0.3
+  dropout: 0.8
   
   # Review feature settings
   # sentence_transformer default is 384; CLI --bert_whitening_dim also sets review_dim.
-  review_dim: 384
+  review_dim: 64
   use_review: true  # Whether to use review features
   symm: true  # Symmetric normalization
   
   # Disentangled representation settings
-  num_factors: 4  # Number of latent factors (K)
+  num_factors: 2  # Number of latent factors (K)
   
   # Contrastive learning settings
   use_contrastive: true
-  cl_weight: 0.1
+  cl_weight: 0.005
   temperature: 0.2
   num_pos: 10
-  num_neg: 64
+  num_neg: 2048
   use_review_prototypes: true
   init_review_prototypes: true
-  debug_shapes: true
+  debug_shapes: false
   
   # Disentanglement regularization
-  disentangle_weight: 0.01
+  disentangle_weight: 0.0
   
   # Prediction mode
   classification: false
@@ -40,16 +40,17 @@ model:
 training:
   batch: 1
   eval_batch: 1
-  epoch: 400
-  lr: 0.001
+  epoch: 2000
+  lr: 0.01
   weight_decay: 0.0
-  early_stop_patience: 50
+  early_stop_patience: 100
   grad_clip: 1.0  # Gradient clipping threshold
   eval_step: 1
 
 evaluation:
   best_metric_name: "rmse"
   metrics: ["rmse", "mse", "mae"]
+  eval_clip: false
 
 # Data paths and settings
 data:
