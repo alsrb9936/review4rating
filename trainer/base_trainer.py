@@ -39,6 +39,7 @@ class BaseTrainer:
         self.best_metric_name = configs.get('best_metric_name', 'rmse')
         self.min_rating = float(configs.get('min_rating', 1.0))
         self.max_rating = float(configs.get('max_rating', 5.0))
+        self.eval_clip = self._get_bool_config('eval_clip', True)
         
         self.epoch = configs.get('epoch', 100)
         self.eval_step = configs.get('eval_step', 1)
@@ -61,6 +62,40 @@ class BaseTrainer:
             'rmse': float(rmse(predictions, ratings)),
             'mae': float(mae(predictions, ratings))
         }
+
+    def _get_bool_config(self, key, default=False):
+        value = self.configs.get(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+        return bool(value)
+
+    def _range_value(self, values: np.ndarray[Any, Any], fn):
+        if values.size == 0:
+            return float('nan')
+        return float(fn(values))
+
+    def _build_eval_metrics(self, predictions: np.ndarray[Any, Any], ratings: np.ndarray[Any, Any], phase='valid'):
+        raw_predictions = predictions.astype(np.float64, copy=False)
+        eval_predictions = (
+            np.clip(raw_predictions, self.min_rating, self.max_rating)
+            if self.eval_clip
+            else raw_predictions
+        )
+
+        metrics = self._build_metrics(eval_predictions, ratings)
+        metrics.update({
+            'num_samples': int(ratings.size),
+            'eval_clip': bool(self.eval_clip),
+            'min_rating': float(self.min_rating),
+            'max_rating': float(self.max_rating),
+            'unclipped_prediction_min': self._range_value(raw_predictions, np.min),
+            'unclipped_prediction_max': self._range_value(raw_predictions, np.max),
+            'clipped_prediction_min': self._range_value(eval_predictions, np.min),
+            'clipped_prediction_max': self._range_value(eval_predictions, np.max),
+            'label_min': self._range_value(ratings, np.min),
+            'label_max': self._range_value(ratings, np.max),
+        })
+        return metrics
     
     def train(self):
         print(f"Starting training for {self.epoch} epochs")
@@ -123,11 +158,15 @@ class BaseTrainer:
             predictions = self._predict_batch(batch).view(-1)
             all_predictions.append(predictions.cpu().numpy())
             all_ratings.append(ratings.cpu().numpy())
-        
+
+        if not all_ratings:
+            empty = np.array([], dtype=np.float64)
+            return self._build_eval_metrics(empty, empty, phase=phase)
+         
         predictions = np.concatenate(all_predictions)
         ratings = np.concatenate(all_ratings)
         
-        return self._build_metrics(predictions, ratings)
+        return self._build_eval_metrics(predictions, ratings, phase=phase)
     
     def _predict_batch(self, batch):
         raise NotImplementedError("Subclasses must implement _predict_batch()")

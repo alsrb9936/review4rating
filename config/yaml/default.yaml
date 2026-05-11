@@ -9,6 +9,10 @@ evaluation:
   eval_step: 1
   early_stop_patience: 10
   best_metric_name: "rmse"
+  eval_clip: true
+  drop_cold_start_eval: true
+  min_rating: 1.0
+  max_rating: 5.0
 
 model:
   embedding_size: 64

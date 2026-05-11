@@ -1,0 +1,16 @@
+{
+  "mse": 1.1473754048969136,
+  "rmse": 1.071156106688896,
+  "mae": 0.7838164628354719,
+  "num_samples": 23168,
+  "eval_clip": true,
+  "min_rating": 1.0,
+  "max_rating": 5.0,
+  "unclipped_prediction_min": 0.8006123900413513,
+  "unclipped_prediction_max": 5.686251640319824,
+  "clipped_prediction_min": 1.0,
+  "clipped_prediction_max": 5.0,
+  "label_min": 1.0,
+  "label_max": 5.0,
+  "best_valid_metric": 1.0628430492437924
+}

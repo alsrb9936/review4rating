@@ -26,6 +26,10 @@ class Config(dict[str, Any]):
             "best_metric_name",
             "metrics",
             "clamp_eval_pred",
+            "eval_clip",
+            "drop_cold_start_eval",
+            "min_rating",
+            "max_rating",
         },
         "model": {
             "name",

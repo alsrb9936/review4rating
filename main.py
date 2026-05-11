@@ -12,6 +12,17 @@ from trainer import MODEL_TRAINER_DICT
 from metric import print_results
 
 
+def str_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    value = str(value).strip().lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected boolean value, got {value!r}")
+
+
 def apply_iard_loss_preset(configs):
     model_name = configs.get('basemodel') or configs.get('model', {}).get('name')
     if model_name != 'iard_rm':
@@ -111,6 +122,8 @@ def args_parser():
     parser.add_argument("--ssg_preset", type=str, default=None, choices=["custom", "set_only", "set_sequence", "set_graph", "full", "no_decov"], help="SSG ablation preset")
     parser.add_argument("--overfit_n", type=int, default=None, help="Train on only N interactions for overfit debugging")
     parser.add_argument("--loss_preset", type=str, default=None, help="IARD loss preset: rating_only, review_fusion, align_only, full_iard, full_no_sep, full_no_residual_pred, full_fixed_gate, full_eta_0_3, full_low_align")
+    parser.add_argument("--eval_clip", type=str_to_bool, default=None, help="Clip validation/test predictions to [min_rating, max_rating]")
+    parser.add_argument("--drop_cold_start_eval", type=str_to_bool, default=None, help="Drop valid/test rows with users/items unseen in train")
     
     return parser.parse_args()
 
@@ -123,6 +136,62 @@ def setup_environment(configs):
     os.makedirs(result_path, exist_ok=True)
     configs["result_path"] = result_path
     return result_path
+
+
+def _config_bool(configs, key, default=False):
+    value = configs.get(key, default)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def diagnose_and_filter_cold_start(train_df, valid_df, test_df, configs):
+    train_users = set(train_df["user_id"].tolist())
+    train_items = set(train_df["item_id"].tolist())
+    drop_cold = _config_bool(configs, "drop_cold_start_eval", True)
+    summary = {}
+
+    def process_split(name, frame):
+        if len(frame) == 0:
+            stats = {
+                "num_samples_before": 0,
+                "cold_user_count": 0,
+                "cold_item_count": 0,
+                "cold_interaction_count": 0,
+                "removed_count": 0,
+                "num_samples_after": 0,
+            }
+            print(f"Cold-start {name}: empty split; drop_cold_start_eval={drop_cold}")
+            return frame.reset_index(drop=True), stats
+
+        user_seen = frame["user_id"].isin(train_users)
+        item_seen = frame["item_id"].isin(train_items)
+        keep_mask = user_seen & item_seen
+        cold_user_count = int((~user_seen).sum())
+        cold_item_count = int((~item_seen).sum())
+        cold_interaction_count = int((~keep_mask).sum())
+        filtered = frame.loc[keep_mask].reset_index(drop=True) if drop_cold else frame.reset_index(drop=True)
+        removed_count = cold_interaction_count if drop_cold else 0
+        stats = {
+            "num_samples_before": int(len(frame)),
+            "cold_user_count": cold_user_count,
+            "cold_item_count": cold_item_count,
+            "cold_interaction_count": cold_interaction_count,
+            "removed_count": int(removed_count),
+            "num_samples_after": int(len(filtered)),
+        }
+        print(
+            f"Cold-start {name}: before={stats['num_samples_before']}, "
+            f"cold_user_rows={cold_user_count}, cold_item_rows={cold_item_count}, "
+            f"cold_either_rows={cold_interaction_count}, removed={removed_count}, "
+            f"after={stats['num_samples_after']}, drop_cold_start_eval={drop_cold}"
+        )
+        return filtered, stats
+
+    valid_df, summary["valid"] = process_split("valid", valid_df)
+    test_df, summary["test"] = process_split("test", test_df)
+    configs["cold_start_eval_summary"] = summary
+    return valid_df, test_df
 
 
 def prepare_data(configs):
@@ -139,6 +208,7 @@ def prepare_data(configs):
             f"overfit mode enabled: using the same {overfit_n} train interactions for train/valid/test. "
             "These metrics are debug-only and intentionally leak train data into validation/test."
         )
+    valid_df, test_df = diagnose_and_filter_cold_start(train_df, valid_df, test_df, configs)
     train_df, valid_df, test_df = attach_bert_whitening_review_features(train_df, valid_df, test_df, configs)
     train_loader, valid_loader, test_loader = get_dataloader(train_df, valid_df, test_df, configs)
     return {
@@ -181,7 +251,7 @@ def train_mode(configs, data_dict):
     trainer = create_trainer(model_name, data_dict, configs)
 
     print(f"Starting training...")
-    trainer.train()
+    best_valid_metric = trainer.train()
 
     print("\n" + "="*50)
     print("Loading best model and evaluating on test set...")
@@ -193,6 +263,7 @@ def train_mode(configs, data_dict):
     trainer.load_checkpoint(best_model_path)
 
     test_metrics = trainer.evaluate(data_dict['test_loader'], phase='test')
+    test_metrics['best_valid_metric'] = float(best_valid_metric)
     inspect_batch_fn = getattr(trainer, 'inspect_batch', None)
     if int(configs.get('overfit_n', 0) or 0) > 0 and callable(inspect_batch_fn):
         print("debug train batch inspect:", inspect_batch_fn(dataloader=data_dict['train_loader'], backward=False))
@@ -233,6 +304,10 @@ def eval_mode(args):
         configs['overfit_n'] = args.overfit_n
     if args.loss_preset is not None:
         configs['loss_preset'] = args.loss_preset
+    if args.eval_clip is not None:
+        configs['eval_clip'] = args.eval_clip
+    if args.drop_cold_start_eval is not None:
+        configs['drop_cold_start_eval'] = args.drop_cold_start_eval
     apply_iard_loss_preset(configs)
 
     model_name = configs.get('basemodel') or configs.get('model', {}).get('name')
@@ -301,6 +376,8 @@ def main():
         'ssg_preset': args.ssg_preset,
         'overfit_n': args.overfit_n,
         'loss_preset': args.loss_preset,
+        'eval_clip': args.eval_clip,
+        'drop_cold_start_eval': args.drop_cold_start_eval,
     }
     configs.merge({k: v for k, v in cli_overrides.items() if v is not None})
     

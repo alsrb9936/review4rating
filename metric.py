@@ -18,5 +18,10 @@ def mae(predictions, ground_truth):
 
 
 def print_results(results):
-    for key, value in sorted(results.items()):
-        print(f"  {key}: {value:.4f}")
+    for key in ["mse", "rmse", "mae"]:
+        if key in results:
+            value = results[key]
+            if isinstance(value, (int, float, np.integer, np.floating)):
+                print(f"  {key}: {float(value):.4f}")
+            else:
+                print(f"  {key}: {value}")

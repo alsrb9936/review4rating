@@ -334,12 +334,14 @@ def get_dataloader(train_df, valid_df, test_df, configs):
     model_name = configs.get('basemodel') or configs.get('model', {}).get('name', 'neumf')
     dataset_cls = DATASET_DICT[model_name]
 
-    configs["num_users"] = int(
-        max(train_df["user_id"].max(), valid_df["user_id"].max(), test_df["user_id"].max())
-    ) + 1
-    configs["num_items"] = int(
-        max(train_df["item_id"].max(), valid_df["item_id"].max(), test_df["item_id"].max())
-    ) + 1
+    def max_id_across_splits(column: str) -> int:
+        max_values = [frame[column].max() for frame in (train_df, valid_df, test_df) if len(frame) > 0]
+        if not max_values:
+            return -1
+        return int(max(max_values))
+
+    configs["num_users"] = max_id_across_splits("user_id") + 1
+    configs["num_items"] = max_id_across_splits("item_id") + 1
 
     if model_name == "narre":
         from data.narre_dataset import NARREDataset

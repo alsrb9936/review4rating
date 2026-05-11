@@ -269,7 +269,11 @@ class IARDRMTrainer(BaseTrainer):
             all_yS.append(_to_numpy(output["yS"]))
             all_yR.append(_to_numpy(output["yR"]))
 
-        predictions = np.concatenate(all_predictions)
+        if not all_ratings:
+            empty = np.array([], dtype=np.float64)
+            return self._build_eval_metrics(empty, empty, phase=phase)
+
+        raw_predictions = np.concatenate(all_predictions)
         ratings = np.concatenate(all_ratings)
         user_ids = np.concatenate(all_user_ids)
         item_ids = np.concatenate(all_item_ids)
@@ -280,7 +284,12 @@ class IARDRMTrainer(BaseTrainer):
         yY_values = np.concatenate(all_yY)
         yS_values = np.concatenate(all_yS)
         yR_values = np.concatenate(all_yR)
-        metrics = self._build_metrics(predictions, ratings)
+        predictions = (
+            np.clip(raw_predictions, self.min_rating, self.max_rating)
+            if self.eval_clip
+            else raw_predictions
+        )
+        metrics = self._build_eval_metrics(raw_predictions, ratings, phase=phase)
         metrics["mean_gate"], metrics["std_gate"] = _summarize_distribution(gate_values)
         metrics["mean_p_inc"], metrics["std_p_inc"] = _summarize_distribution(p_inc_values)
         metrics["mean_alignment"], metrics["std_alignment"] = _summarize_distribution(alignment_values)
@@ -296,6 +305,7 @@ class IARDRMTrainer(BaseTrainer):
                         "user_id": int(user_ids[idx]),
                         "item_id": int(item_ids[idx]),
                         "rating": float(ratings[idx]),
+                        "pred_unclipped": float(raw_predictions[idx]),
                         "pred": float(predictions[idx]),
                         "abs_error": float(abs_error[idx]),
                         "gate": float(gate_values[idx]),
