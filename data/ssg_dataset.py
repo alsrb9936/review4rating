@@ -351,7 +351,8 @@ class SSGDataset(RecDataset):
         seq_len = torch.tensor(min(len(entries), self.seq_count), dtype=torch.long)
 
         reviews = self._adjust_review_tokens([entry[4] for entry in limited_entries], self.seq_count)
-        pos_ind = [position for position in range(1, len(limited_entries) + 1)]
+        seq_len_value = len(limited_entries)
+        pos_ind = [seq_len_value - position for position in range(seq_len_value)]
         rel_dt = [min(int(max(float(target_ts) - entry[3], 0.0) / self.time_scale), self.max_rel_bucket) for entry in limited_entries]
         abs_dt = [entry[3] for entry in limited_entries]
 
@@ -469,7 +470,7 @@ class SSGDataset(RecDataset):
 
             for edge_idx, entry in enumerate(unique_entries):
                 edge_index[0, edge_idx] = entry[0]
-                edge_index[1, edge_idx] = self.num_users + entry[1]
+                edge_index[1, edge_idx] = entry[1]
                 edge_reviews[edge_idx] = torch.tensor(
                     self._adjust_review_tokens([entry[4]], 1)[0],
                     dtype=torch.long,

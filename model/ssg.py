@@ -169,6 +169,7 @@ class SSG(AbstractRec):
         self._cached_item_seq = None
         self._cached_user_graph = None
         self._cached_item_graph = None
+        self._shape_logged = False
 
         self.init_weights()
 
@@ -341,59 +342,83 @@ class SSG(AbstractRec):
         if not self.use_graph_view or graph_adj is None or graph_reviews is None or graph_ratings is None:
             return zero_user, zero_item
 
-        if graph_adj.dim() != 2 or graph_adj.size(0) != 2:
-            raise ValueError("Expected graph_adj with shape [2, E].")
+        if graph_adj.dim() == 2:
+            graph_adj = graph_adj.unsqueeze(0).expand(batch_size, -1, -1)
+        if graph_reviews.dim() == 2:
+            graph_reviews = graph_reviews.unsqueeze(0).expand(batch_size, -1, -1)
+        if graph_ratings.dim() == 1:
+            graph_ratings = graph_ratings.unsqueeze(0).expand(batch_size, -1)
+        if graph_adj.dim() != 3 or graph_adj.size(0) != batch_size or graph_adj.size(1) != 2:
+            raise ValueError("Expected graph_adj with shape [B, 2, E] or [2, E].")
+        if graph_reviews.dim() != 3 or graph_reviews.size(0) != batch_size:
+            raise ValueError("Expected graph_reviews with shape [B, E, L] or [E, L].")
+        if graph_ratings.dim() != 2 or graph_ratings.size(0) != batch_size:
+            raise ValueError("Expected graph_ratings with shape [B, E] or [E].")
 
-        src_users = graph_adj[0].clamp(min=0, max=self.num_users - 1)
-        dst_items = graph_adj[1].clamp(min=0, max=self.num_items - 1)
-        edge_reviews = self._pool_graph_reviews(graph_reviews)
+        user_outputs: List[torch.Tensor] = []
+        item_outputs: List[torch.Tensor] = []
 
-        if graph_ratings.dim() > 1:
-            graph_ratings = graph_ratings.view(-1)
-        rating_index = graph_ratings.long().clamp(min=1, max=5) - 1
-        edge_rating_one_hot = F.one_hot(rating_index, num_classes=5).float()
+        for sample_idx in range(batch_size):
+            sample_adj = graph_adj[sample_idx]
+            sample_reviews = graph_reviews[sample_idx]
+            sample_ratings = graph_ratings[sample_idx]
+            valid_mask = sample_adj[0].ge(0) & sample_adj[1].ge(0) & sample_ratings.gt(0)
+            if not bool(valid_mask.any()):
+                user_outputs.append(zero_user[sample_idx])
+                item_outputs.append(zero_item[sample_idx])
+                continue
 
-        user_nodes = cast(torch.Tensor, self.graph_user_embedding.weight)
-        item_nodes = cast(torch.Tensor, self.graph_item_embedding.weight)
-        node_states = torch.cat([user_nodes, item_nodes], dim=0)
+            src_users = sample_adj[0, valid_mask].clamp(min=0, max=self.num_users - 1)
+            dst_items = sample_adj[1, valid_mask].clamp(min=0, max=self.num_items - 1)
+            edge_reviews = self._pool_graph_reviews(sample_reviews[valid_mask])
 
-        src_node_index = src_users
-        dst_node_index = self.num_users + dst_items
-        bidir_src = torch.cat([src_node_index, dst_node_index], dim=0)
-        bidir_dst = torch.cat([dst_node_index, src_node_index], dim=0)
+            rating_index = sample_ratings[valid_mask].long().clamp(min=1, max=5) - 1
+            edge_rating_one_hot = F.one_hot(rating_index, num_classes=5).float()
 
-        edge_review_proj = cast(torch.Tensor, self.graph_review_projection(edge_reviews))
-        edge_rating_proj = cast(torch.Tensor, self.graph_rating_projection(edge_rating_one_hot))
-        edge_context = self.leaky_relu(edge_review_proj + edge_rating_proj)
-        edge_context = torch.cat([edge_context, edge_context], dim=0)
+            user_nodes = cast(torch.Tensor, self.graph_user_embedding.weight)
+            item_nodes = cast(torch.Tensor, self.graph_item_embedding.weight)
+            node_states = torch.cat([user_nodes, item_nodes], dim=0)
 
-        for _ in range(self.n_hops):
-            src_states = node_states[bidir_src]
-            dst_states = node_states[bidir_dst]
-            attention_hidden = self.leaky_relu(
-                cast(torch.Tensor, self.graph_src_projection(src_states))
-                + cast(torch.Tensor, self.graph_dst_projection(dst_states))
-                + edge_context
-            )
+            src_node_index = src_users
+            dst_node_index = self.num_users + dst_items
+            bidir_src = torch.cat([src_node_index, dst_node_index], dim=0)
+            bidir_dst = torch.cat([dst_node_index, src_node_index], dim=0)
 
-            head_scores: List[torch.Tensor] = []
-            for head in self.graph_attention_heads:
-                head_scores.append(cast(torch.Tensor, head(attention_hidden)))
-            attention_scores = torch.mean(torch.cat(head_scores, dim=1), dim=1)
-            attention_scores = torch.sigmoid(attention_scores)
+            edge_review_proj = cast(torch.Tensor, self.graph_review_projection(edge_reviews))
+            edge_rating_proj = cast(torch.Tensor, self.graph_rating_projection(edge_rating_one_hot))
+            edge_context = self.leaky_relu(edge_review_proj + edge_rating_proj)
+            edge_context = torch.cat([edge_context, edge_context], dim=0)
 
-            message_inputs = torch.cat([src_states, edge_context], dim=1)
-            messages = cast(torch.Tensor, self.graph_message_projection(message_inputs))
-            messages = attention_scores.unsqueeze(1) * messages
+            for _ in range(self.n_hops):
+                src_states = node_states[bidir_src]
+                dst_states = node_states[bidir_dst]
+                attention_hidden = self.leaky_relu(
+                    cast(torch.Tensor, self.graph_src_projection(src_states))
+                    + cast(torch.Tensor, self.graph_dst_projection(dst_states))
+                    + edge_context
+                )
 
-            aggregated = messages.new_zeros(node_states.size(0), self.graph_hidden_dim)
-            aggregated.index_add_(0, bidir_dst, messages)
-            updated = cast(torch.Tensor, self.graph_update(torch.cat([node_states, aggregated], dim=1)))
-            node_states = self.dropout(self.relu(updated))
+                head_scores: List[torch.Tensor] = []
+                for head in self.graph_attention_heads:
+                    head_scores.append(cast(torch.Tensor, head(attention_hidden)))
+                attention_scores = torch.mean(torch.cat(head_scores, dim=1), dim=1)
+                attention_scores = torch.sigmoid(attention_scores)
 
-        user_graph = cast(torch.Tensor, self.graph_output_projection(node_states[user_id]))
-        item_graph = cast(torch.Tensor, self.graph_output_projection(node_states[self.num_users + item_id]))
-        return user_graph, item_graph
+                message_inputs = torch.cat([src_states, edge_context], dim=1)
+                messages = cast(torch.Tensor, self.graph_message_projection(message_inputs))
+                messages = attention_scores.unsqueeze(1) * messages
+
+                aggregated = messages.new_zeros(node_states.size(0), self.graph_hidden_dim)
+                aggregated.index_add_(0, bidir_dst, messages)
+                updated = cast(torch.Tensor, self.graph_update(torch.cat([node_states, aggregated], dim=1)))
+                node_states = self.dropout(self.relu(updated))
+
+            sample_user = user_id[sample_idx].clamp(min=0, max=self.num_users - 1)
+            sample_item = item_id[sample_idx].clamp(min=0, max=self.num_items - 1)
+            user_outputs.append(cast(torch.Tensor, self.graph_output_projection(node_states[sample_user])))
+            item_outputs.append(cast(torch.Tensor, self.graph_output_projection(node_states[self.num_users + sample_item])))
+
+        return torch.stack(user_outputs, dim=0), torch.stack(item_outputs, dim=0)
 
     def _decov(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         if x.size(0) == 0:
@@ -419,6 +444,35 @@ class SSG(AbstractRec):
             for second_index in range(first_index + 1, len(active_views)):
                 loss = loss + self._decov(active_views[first_index], active_views[second_index])
         return cast(torch.Tensor, loss)
+
+    def _assert_and_log_shapes(
+        self,
+        user_review: torch.Tensor,
+        user_seq_reviews: Optional[torch.Tensor],
+        graph_adj: Optional[torch.Tensor],
+        graph_reviews: Optional[torch.Tensor],
+    ) -> None:
+        if user_review.dim() != 3:
+            raise ValueError("Expected user_review with shape [B, R, L].")
+        if user_seq_reviews is not None and user_seq_reviews.dim() != 3:
+            raise ValueError("Expected user_seq_reviews with shape [B, S, L].")
+        if graph_adj is not None and (graph_adj.dim() != 3 or graph_adj.size(1) != 2):
+            raise ValueError("Expected graph_adj with shape [B, 2, E].")
+        if graph_reviews is not None and graph_reviews.dim() != 3:
+            raise ValueError("Expected graph_reviews with shape [B, E, L].")
+
+        debug_shapes = self._get_bool_config("debug_shapes", False)
+        if debug_shapes and not self._shape_logged:
+            print(
+                "SSG shape check:",
+                {
+                    "user_review": tuple(user_review.shape),
+                    "user_seq_reviews": None if user_seq_reviews is None else tuple(user_seq_reviews.shape),
+                    "graph_adj": None if graph_adj is None else tuple(graph_adj.shape),
+                    "graph_reviews": None if graph_reviews is None else tuple(graph_reviews.shape),
+                },
+            )
+            self._shape_logged = True
 
     def _l2_regularization(self) -> torch.Tensor:
         reg = self.global_bias.new_zeros(())
@@ -450,7 +504,8 @@ class SSG(AbstractRec):
         graph_reviews: Optional[torch.Tensor] = None,
         graph_ratings: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        del user_seq_reviews, item_seq_reviews, user_abs_dt, item_abs_dt
+        del user_abs_dt, item_abs_dt
+        self._assert_and_log_shapes(user_review, user_seq_reviews, graph_adj, graph_reviews)
 
         user_review_features = self._encode_review_tokens(user_review, self.user_convs)
         item_review_features = self._encode_review_tokens(item_review, self.item_convs)
@@ -476,8 +531,14 @@ class SSG(AbstractRec):
             padding_value=self.num_users,
         )
 
-        user_seq_features = user_review_features[:, : min(user_review_features.size(1), self.seq_count), :]
-        item_seq_features = item_review_features[:, : min(item_review_features.size(1), self.seq_count), :]
+        if user_seq_reviews is not None:
+            user_seq_features = self._encode_review_tokens(user_seq_reviews, self.user_convs)
+        else:
+            user_seq_features = user_review_features[:, : min(user_review_features.size(1), self.seq_count), :]
+        if item_seq_reviews is not None:
+            item_seq_features = self._encode_review_tokens(item_seq_reviews, self.item_convs)
+        else:
+            item_seq_features = item_review_features[:, : min(item_review_features.size(1), self.seq_count), :]
         if user_pos_ind is not None:
             user_pos_ind = user_pos_ind[:, : user_seq_features.size(1)]
         if item_pos_ind is not None:

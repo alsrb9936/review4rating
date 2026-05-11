@@ -77,7 +77,7 @@ class SSGTrainer(BaseTrainer):
         return {
             "user_id": user_id,
             "item_id": item_id,
-            "ratings": ratings,
+            "rating": ratings,
             "user_review": user_review,
             "item_review": item_review,
             "user_review_item_ids": user_review_item_ids,
@@ -103,7 +103,7 @@ class SSGTrainer(BaseTrainer):
 
         for batch in tqdm(self.train_dataloader, desc=f"Epoch {epoch_idx + 1}"):
             inputs = self._prepare_inputs(batch)
-            loss, loss_dict = self.model.cal_loss(**inputs)
+            loss, loss_dict = self.model.cal_loss(inputs)
 
             if epoch_loss_dict is None:
                 epoch_loss_dict = {key: 0.0 for key in loss_dict}
@@ -125,7 +125,7 @@ class SSGTrainer(BaseTrainer):
 
     def _predict_batch(self, batch):
         inputs = self._prepare_inputs(batch)
-        inputs.pop("ratings", None)
+        inputs.pop("rating", None)
         return self.model.forward(**inputs)
 
     def train(self):

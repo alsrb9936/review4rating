@@ -14,9 +14,14 @@ attention_size: 32
 gru_dim: 100
 time_dim: 32
 latent_dim: 32
+# View presets:
+# - Full SSG (paper default): set + sequence + graph all enabled.
+# - Set-only ablation: set use_sequence_view/use_graph_view to false.
+# - Set+sequence ablation: keep use_sequence_view true and set use_graph_view false.
+ssg_preset: "full"
 use_set_view: true
 use_sequence_view: true
-use_graph_view: false
+use_graph_view: true
 graph_hidden_dim: 32
 graph_node_dim: 32
 graph_attention_dim: 32
@@ -27,6 +32,7 @@ dropout_prob: 0.5
 decov_lambda: 0.01
 l2_lambda: 0.001
 retain_rui: false
+debug_shapes: true
 lr_decay: 0.95
 min_rating: 1.0
 max_rating: 5.0
