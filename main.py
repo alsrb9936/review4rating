@@ -108,6 +108,7 @@ def args_parser():
     parser.add_argument("--review_feature_backend", type=str, default=None, choices=["sentence_transformer", "bert_whitening", "cached"], help="Review feature backend")
     parser.add_argument("--bert_whitening_dim", type=int, default=None, help="Output dimension for BERT-Whitening review features")
     parser.add_argument("--review_input_mode", type=str, default=None, choices=["token", "embedding"], help="SSG review input mode")
+    parser.add_argument("--ssg_preset", type=str, default=None, choices=["custom", "set_only", "set_sequence", "set_graph", "full", "no_decov"], help="SSG ablation preset")
     parser.add_argument("--overfit_n", type=int, default=None, help="Train on only N interactions for overfit debugging")
     parser.add_argument("--loss_preset", type=str, default=None, help="IARD loss preset: rating_only, review_fusion, align_only, full_iard, full_no_sep, full_no_residual_pred, full_fixed_gate, full_eta_0_3, full_low_align")
     
@@ -116,7 +117,7 @@ def args_parser():
 
 def setup_environment(configs):
     set_seed(configs.get('seed', 42))
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     model_name = configs.get('basemodel') or configs.get('model', {}).get('name', 'unknown')
     result_path = os.path.join("results", f"{model_name}_{configs.get('seed', 42)}_{configs.get('dataset', 'unknown')}_{timestamp}")
     os.makedirs(result_path, exist_ok=True)
@@ -226,6 +227,8 @@ def eval_mode(args):
         configs['review_dim'] = args.bert_whitening_dim
     if args.review_input_mode is not None:
         configs['review_input_mode'] = args.review_input_mode
+    if args.ssg_preset is not None:
+        configs['ssg_preset'] = args.ssg_preset
     if args.overfit_n is not None:
         configs['overfit_n'] = args.overfit_n
     if args.loss_preset is not None:
@@ -295,6 +298,7 @@ def main():
         'review_feature_backend': args.review_feature_backend,
         'bert_whitening_dim': args.bert_whitening_dim,
         'review_input_mode': args.review_input_mode,
+        'ssg_preset': args.ssg_preset,
         'overfit_n': args.overfit_n,
         'loss_preset': args.loss_preset,
     }

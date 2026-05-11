@@ -1,8 +1,8 @@
 basemodel: "ssg"
 glove_path: "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt"
-batch: 32
-epoch: 100
-lr: 0.001
+batch: 100
+epoch: 6
+lr: 0.002
 review_count: 10
 review_length: 40
 seq_count: 10
@@ -11,9 +11,9 @@ filter_sizes: [3]
 num_filters: 100
 id_dim: 32
 attention_size: 32
-gru_dim: 100
+gru_dim: 32
 time_dim: 32
-latent_dim: 32
+latent_dim: 8
 # View presets:
 # - Full SSG (paper default): set + sequence + graph all enabled.
 # - Set-only ablation: set use_sequence_view/use_graph_view to false.
@@ -22,18 +22,24 @@ ssg_preset: "full"
 use_set_view: true
 use_sequence_view: true
 use_graph_view: true
-graph_hidden_dim: 32
-graph_node_dim: 32
+graph_hidden_dim: 64
+graph_node_dim: 128
 graph_attention_dim: 32
 n_hops: 2
-n_heads: 2
-alpha: 0.2
-dropout_prob: 0.5
+n_heads: 8
+alpha: 0.25
+beta: 1.0
+max_rel_bucket: 100
+time_percentile: 10.0
+dropout_prob: 0.0
+keep_prob: 1.0
 decov_lambda: 0.01
-l2_lambda: 0.001
+l2_lambda: 1.0
 retain_rui: false
 debug_shapes: true
-lr_decay: 0.95
+train_clip: false
+test_clip: true
+lr_decay: 1.0
 min_rating: 1.0
 max_rating: 5.0
 weight_decay: 0.0

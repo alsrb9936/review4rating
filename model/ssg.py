@@ -32,9 +32,18 @@ class SSG(AbstractRec):
         if self.review_input_mode not in {"token", "embedding"}:
             raise ValueError("review_input_mode must be 'token' or 'embedding'.")
 
+        preset = str(self.configs.get("ssg_preset", "custom"))
         self.use_set_view = self._get_bool_config("use_set_view", True)
         self.use_sequence_view = self._get_bool_config("use_sequence_view", True)
         self.use_graph_view = self._get_bool_config("use_graph_view", False)
+        if preset == "set_only":
+            self.use_set_view, self.use_sequence_view, self.use_graph_view = True, False, False
+        elif preset == "set_sequence":
+            self.use_set_view, self.use_sequence_view, self.use_graph_view = True, True, False
+        elif preset == "set_graph":
+            self.use_set_view, self.use_sequence_view, self.use_graph_view = True, False, True
+        elif preset in {"full", "no_decov"}:
+            self.use_set_view, self.use_sequence_view, self.use_graph_view = True, True, True
 
         self.graph_hidden_dim = self._get_int_config("graph_hidden_dim", 32)
         self.graph_node_dim = self._get_int_config("graph_node_dim", 32)
@@ -42,9 +51,15 @@ class SSG(AbstractRec):
         self.n_hops = self._get_int_config("n_hops", 2)
         self.n_heads = self._get_int_config("n_heads", 2)
         self.alpha = self._get_float_config("alpha", 0.2)
+        self.train_clip = self._get_bool_config("train_clip", False)
+        self.test_clip = self._get_bool_config("test_clip", True)
+        self.min_rating = self._get_float_config("min_rating", 1.0)
+        self.max_rating = self._get_float_config("max_rating", 5.0)
 
         self.dropout_prob = self._get_float_config("dropout_prob", 0.5)
         self.decov_lambda = self._get_float_config("decov_lambda", 0.01)
+        if preset == "no_decov":
+            self.decov_lambda = 0.0
         self.l2_lambda = self._get_float_config("l2_lambda", 0.001)
 
         self.num_users = int(getattr(train_dataset, "num_users"))
@@ -108,13 +123,14 @@ class SSG(AbstractRec):
 
         self.user_gru = nn.GRU(self.cnn_out_dim, self.gru_dim, batch_first=True)
         self.item_gru = nn.GRU(self.cnn_out_dim, self.gru_dim, batch_first=True)
-        self.position_embedding = nn.Embedding(150, self.time_dim)
-        self.relative_time_embedding = nn.Embedding(150, self.time_dim)
+        self.max_rel_bucket = self._get_int_config("max_rel_bucket", 100)
+        self.position_embedding = nn.Embedding(max(self.seq_count + 1, self.max_rel_bucket + 1), self.time_dim)
+        self.relative_time_embedding = nn.Embedding(self.max_rel_bucket + 1, self.time_dim)
         self.user_content_query = nn.Linear(self.gru_dim, self.gru_dim)
         self.item_content_query = nn.Linear(self.gru_dim, self.gru_dim)
         self.user_temporal_fc = nn.Linear(self.time_dim, 1)
         self.item_temporal_fc = nn.Linear(self.time_dim, 1)
-        self.beta = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
+        self.beta = nn.Parameter(torch.tensor(self._get_float_config("beta", 1.0), dtype=torch.float32))
 
         self.graph_user_embedding = nn.Embedding(self.num_users, self.graph_node_dim)
         self.graph_item_embedding = nn.Embedding(self.num_items, self.graph_node_dim)
@@ -276,7 +292,10 @@ class SSG(AbstractRec):
         id_proj = cast(torch.Tensor, id_fc(review_id_features))
         attention_logits = cast(torch.Tensor, attention_fc(self.relu(review_proj + id_proj)))
 
-        review_mask = review_tokens.ne(self.pad_idx).any(dim=2)
+        if self.review_input_mode == "embedding":
+            review_mask = review_features.abs().sum(dim=2).gt(0)
+        else:
+            review_mask = review_tokens.ne(self.pad_idx).any(dim=2)
         review_mask = review_mask & safe_review_ids.ne(padding_value)
         mask = review_mask.unsqueeze(-1)
         attention_logits = attention_logits.masked_fill(~mask, -1e9)
@@ -311,8 +330,17 @@ class SSG(AbstractRec):
         if seq_len == 0:
             return sequence_features.new_zeros(batch_size, self.gru_dim)
 
-        gru_outputs, hidden = gru(sequence_features)
-        last_hidden = hidden[-1]
+        if sequence_lengths is None:
+            sequence_lengths = self._build_sequence_mask(sequence_features, None).sum(dim=1)
+        clipped_lengths = sequence_lengths.clamp(min=1, max=seq_len).cpu()
+        sorted_lengths, sort_idx = torch.sort(clipped_lengths, descending=True)
+        unsort_idx = torch.argsort(sort_idx)
+        sorted_features = sequence_features[sort_idx]
+        packed = nn.utils.rnn.pack_padded_sequence(sorted_features, sorted_lengths, batch_first=True, enforce_sorted=True)
+        packed_out, hidden = gru(packed)
+        unpacked, _ = nn.utils.rnn.pad_packed_sequence(packed_out, batch_first=True, total_length=seq_len)
+        gru_outputs = unpacked[unsort_idx]
+        last_hidden = hidden[-1][unsort_idx]
         content_query = cast(torch.Tensor, query_projection(last_hidden)).unsqueeze(2)
         content_attn = cast(
             torch.Tensor,
@@ -323,8 +351,8 @@ class SSG(AbstractRec):
             pos_ind = torch.arange(seq_len, device=sequence_features.device).unsqueeze(0).expand(batch_size, -1)
         if rel_dt is None:
             rel_dt = torch.zeros(batch_size, seq_len, dtype=torch.long, device=sequence_features.device)
-        pos_ind = pos_ind.clamp(min=0, max=149)
-        rel_dt = rel_dt.clamp(min=0, max=149)
+        pos_ind = pos_ind.clamp(min=0, max=self.position_embedding.num_embeddings - 1)
+        rel_dt = rel_dt.clamp(min=0, max=self.max_rel_bucket)
 
         temporal_emb = cast(torch.Tensor, self.position_embedding(pos_ind))
         temporal_emb = temporal_emb + cast(torch.Tensor, self.relative_time_embedding(rel_dt))
@@ -364,83 +392,60 @@ class SSG(AbstractRec):
         if not self.use_graph_view or graph_adj is None or graph_reviews is None or graph_ratings is None:
             return zero_user, zero_item
 
-        if graph_adj.dim() == 2:
-            graph_adj = graph_adj.unsqueeze(0).expand(batch_size, -1, -1)
-        if graph_reviews.dim() == 2:
-            graph_reviews = graph_reviews.unsqueeze(0).expand(batch_size, -1, -1)
-        if graph_ratings.dim() == 1:
-            graph_ratings = graph_ratings.unsqueeze(0).expand(batch_size, -1)
-        if graph_adj.dim() != 3 or graph_adj.size(0) != batch_size or graph_adj.size(1) != 2:
-            raise ValueError("Expected graph_adj with shape [B, 2, E] or [2, E].")
-        if graph_reviews.dim() != 3 or graph_reviews.size(0) != batch_size:
-            raise ValueError("Expected graph_reviews with shape [B, E, L] or [E, L].")
-        if graph_ratings.dim() != 2 or graph_ratings.size(0) != batch_size:
-            raise ValueError("Expected graph_ratings with shape [B, E] or [E].")
+        if graph_adj.dim() == 3:
+            graph_adj = graph_adj[0]
+        if graph_reviews.dim() == 3:
+            graph_reviews = graph_reviews[0]
+        if graph_ratings.dim() == 2:
+            graph_ratings = graph_ratings[0]
+        if graph_adj.dim() != 2 or graph_adj.size(0) != 2:
+            raise ValueError("Expected full graph_adj with shape [2, E].")
 
-        user_outputs: List[torch.Tensor] = []
-        item_outputs: List[torch.Tensor] = []
+        valid_mask = graph_adj[0].ge(0) & graph_adj[1].ge(0) & graph_ratings.gt(0)
+        if not bool(valid_mask.any()):
+            return zero_user, zero_item
 
-        for sample_idx in range(batch_size):
-            sample_adj = graph_adj[sample_idx]
-            sample_reviews = graph_reviews[sample_idx]
-            sample_ratings = graph_ratings[sample_idx]
-            valid_mask = sample_adj[0].ge(0) & sample_adj[1].ge(0) & sample_ratings.gt(0)
-            if not bool(valid_mask.any()):
-                user_outputs.append(zero_user[sample_idx])
-                item_outputs.append(zero_item[sample_idx])
-                continue
+        src_nodes = graph_adj[0, valid_mask].clamp(min=0, max=self.num_users + self.num_items - 1)
+        dst_nodes = graph_adj[1, valid_mask].clamp(min=0, max=self.num_users + self.num_items - 1)
+        edge_reviews = self._pool_graph_reviews(graph_reviews[valid_mask])
+        rating_index = graph_ratings[valid_mask].long().clamp(min=1, max=5) - 1
+        edge_rating_one_hot = F.one_hot(rating_index, num_classes=5).float()
 
-            src_users = sample_adj[0, valid_mask].clamp(min=0, max=self.num_users - 1)
-            dst_items = sample_adj[1, valid_mask].clamp(min=0, max=self.num_items - 1)
-            edge_reviews = self._pool_graph_reviews(sample_reviews[valid_mask])
+        bidir_src = torch.cat([src_nodes, dst_nodes], dim=0)
+        bidir_dst = torch.cat([dst_nodes, src_nodes], dim=0)
+        edge_review_proj = cast(torch.Tensor, self.graph_review_projection(edge_reviews))
+        edge_rating_proj = cast(torch.Tensor, self.graph_rating_projection(edge_rating_one_hot))
+        edge_context = self.leaky_relu(edge_review_proj + edge_rating_proj)
+        edge_context = torch.cat([edge_context, edge_context], dim=0)
 
-            rating_index = sample_ratings[valid_mask].long().clamp(min=1, max=5) - 1
-            edge_rating_one_hot = F.one_hot(rating_index, num_classes=5).float()
+        node_states = torch.cat([cast(torch.Tensor, self.graph_user_embedding.weight), cast(torch.Tensor, self.graph_item_embedding.weight)], dim=0)
+        num_nodes = node_states.size(0)
+        for _ in range(self.n_hops):
+            src_states = node_states[bidir_src]
+            dst_states = node_states[bidir_dst]
+            attention_hidden = self.leaky_relu(
+                cast(torch.Tensor, self.graph_src_projection(src_states))
+                + cast(torch.Tensor, self.graph_dst_projection(dst_states))
+                + edge_context
+            )
+            head_scores = [cast(torch.Tensor, head(attention_hidden)) for head in self.graph_attention_heads]
+            logits = torch.mean(torch.cat(head_scores, dim=1), dim=1)
+            exp_logits = torch.exp(logits - logits.max()).clamp_max(1e6)
+            denom = exp_logits.new_zeros(num_nodes)
+            denom.index_add_(0, bidir_dst, exp_logits)
+            attention_scores = exp_logits / denom[bidir_dst].clamp_min(1e-8)
 
-            user_nodes = cast(torch.Tensor, self.graph_user_embedding.weight)
-            item_nodes = cast(torch.Tensor, self.graph_item_embedding.weight)
-            node_states = torch.cat([user_nodes, item_nodes], dim=0)
+            message_inputs = torch.cat([src_states, edge_context], dim=1)
+            messages = cast(torch.Tensor, self.graph_message_projection(message_inputs))
+            messages = attention_scores.unsqueeze(1) * messages
+            aggregated = messages.new_zeros(num_nodes, self.graph_hidden_dim)
+            aggregated.index_add_(0, bidir_dst, messages)
+            updated = cast(torch.Tensor, self.graph_update(torch.cat([node_states, aggregated], dim=1)))
+            node_states = self.dropout(self.relu(updated)) + node_states
 
-            src_node_index = src_users
-            dst_node_index = self.num_users + dst_items
-            bidir_src = torch.cat([src_node_index, dst_node_index], dim=0)
-            bidir_dst = torch.cat([dst_node_index, src_node_index], dim=0)
-
-            edge_review_proj = cast(torch.Tensor, self.graph_review_projection(edge_reviews))
-            edge_rating_proj = cast(torch.Tensor, self.graph_rating_projection(edge_rating_one_hot))
-            edge_context = self.leaky_relu(edge_review_proj + edge_rating_proj)
-            edge_context = torch.cat([edge_context, edge_context], dim=0)
-
-            for _ in range(self.n_hops):
-                src_states = node_states[bidir_src]
-                dst_states = node_states[bidir_dst]
-                attention_hidden = self.leaky_relu(
-                    cast(torch.Tensor, self.graph_src_projection(src_states))
-                    + cast(torch.Tensor, self.graph_dst_projection(dst_states))
-                    + edge_context
-                )
-
-                head_scores: List[torch.Tensor] = []
-                for head in self.graph_attention_heads:
-                    head_scores.append(cast(torch.Tensor, head(attention_hidden)))
-                attention_scores = torch.mean(torch.cat(head_scores, dim=1), dim=1)
-                attention_scores = torch.sigmoid(attention_scores)
-
-                message_inputs = torch.cat([src_states, edge_context], dim=1)
-                messages = cast(torch.Tensor, self.graph_message_projection(message_inputs))
-                messages = attention_scores.unsqueeze(1) * messages
-
-                aggregated = messages.new_zeros(node_states.size(0), self.graph_hidden_dim)
-                aggregated.index_add_(0, bidir_dst, messages)
-                updated = cast(torch.Tensor, self.graph_update(torch.cat([node_states, aggregated], dim=1)))
-                node_states = self.dropout(self.relu(updated))
-
-            sample_user = user_id[sample_idx].clamp(min=0, max=self.num_users - 1)
-            sample_item = item_id[sample_idx].clamp(min=0, max=self.num_items - 1)
-            user_outputs.append(cast(torch.Tensor, self.graph_output_projection(node_states[sample_user])))
-            item_outputs.append(cast(torch.Tensor, self.graph_output_projection(node_states[self.num_users + sample_item])))
-
-        return torch.stack(user_outputs, dim=0), torch.stack(item_outputs, dim=0)
+        user_graph = cast(torch.Tensor, self.graph_output_projection(node_states[user_id.clamp(min=0, max=self.num_users - 1)]))
+        item_graph = cast(torch.Tensor, self.graph_output_projection(node_states[self.num_users + item_id.clamp(min=0, max=self.num_items - 1)]))
+        return user_graph, item_graph
 
     def _decov(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         if x.size(0) == 0:
@@ -483,10 +488,10 @@ class SSG(AbstractRec):
             raise ValueError(f"Expected user_review last dim {expected_last_dim}, got {user_review.size(-1)}.")
         if user_seq_reviews is not None and user_seq_reviews.size(-1) != expected_last_dim:
             raise ValueError(f"Expected user_seq_reviews last dim {expected_last_dim}, got {user_seq_reviews.size(-1)}.")
-        if graph_adj is not None and (graph_adj.dim() != 3 or graph_adj.size(1) != 2):
-            raise ValueError("Expected graph_adj with shape [B, 2, E].")
-        if graph_reviews is not None and graph_reviews.dim() != 3:
-            raise ValueError("Expected graph_reviews with shape [B, E, L].")
+        if graph_adj is not None and not ((graph_adj.dim() == 3 and graph_adj.size(1) == 2) or (graph_adj.dim() == 2 and graph_adj.size(0) == 2)):
+            raise ValueError("Expected graph_adj with shape [B, 2, E] or [2, E].")
+        if graph_reviews is not None and graph_reviews.dim() not in {2, 3}:
+            raise ValueError("Expected graph_reviews with shape [B, E, L] or [E, L].")
 
         debug_shapes = self._get_bool_config("debug_shapes", False)
         if debug_shapes and not self._shape_logged:
@@ -504,9 +509,18 @@ class SSG(AbstractRec):
     def _l2_regularization(self) -> torch.Tensor:
         reg = self.global_bias.new_zeros(())
         for name, parameter in self.named_parameters():
-            if not parameter.requires_grad or name == "word_embedding.weight":
+            if not parameter.requires_grad:
                 continue
-            reg = reg + parameter.pow(2).sum()
+            if not (
+                name.startswith("user_review_fc")
+                or name.startswith("item_review_fc")
+                or name.startswith("user_id_attention_fc")
+                or name.startswith("item_id_attention_fc")
+                or name.startswith("user_attention_fc")
+                or name.startswith("item_attention_fc")
+            ):
+                continue
+            reg = reg + 0.5 * parameter.pow(2).sum()
         return cast(torch.Tensor, reg)
 
     def forward(
@@ -632,6 +646,8 @@ class SSG(AbstractRec):
         pred = pred + cast(torch.Tensor, self.user_bias(user_id))
         pred = pred + cast(torch.Tensor, self.item_bias(item_id))
         pred = pred + self.global_bias
+        if (self.training and self.train_clip) or ((not self.training) and self.test_clip):
+            pred = pred.clamp(min=self.min_rating, max=self.max_rating)
         return pred
 
     def cal_loss(

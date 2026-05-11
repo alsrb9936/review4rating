@@ -59,9 +59,10 @@ class SSGDataset(RecDataset):
     graph_adj: torch.Tensor | None
     graph_reviews: torch.Tensor | None
     graph_ratings: torch.Tensor | None
+    graph_nodes: torch.Tensor | None
     time_scale: float
 
-    def __init__(self, df: pd.DataFrame, configs: Mapping[str, object], split: str = "train") -> None:
+    def __init__(self, df: pd.DataFrame, configs: Mapping[str, object], split: str = "train", train_dataset: SSGDataset | None = None) -> None:
         if "timestamp" not in df.columns:
             raise ValueError("SSG requires 'timestamp' column in dataset. The .inter file must have 'timestamp:float' column.")
 
@@ -79,12 +80,17 @@ class SSGDataset(RecDataset):
         )
         self.retain_rui = self._coerce_bool(configs.get("retain_rui", False), False)
         self.use_graph_view = self._coerce_bool(configs.get("use_graph_view", False), False)
+        preset = self._coerce_str(configs.get("ssg_preset", "custom"), "custom")
+        if preset in {"set_only", "set_sequence"}:
+            self.use_graph_view = False
+        elif preset in {"set_graph", "full", "no_decov"}:
+            self.use_graph_view = True
         self.review_input_mode = self._coerce_str(configs.get("review_input_mode", "token"), "token")
         if self.review_input_mode not in {"token", "embedding"}:
             raise ValueError("review_input_mode must be 'token' or 'embedding'.")
         self.review_dim = self._coerce_int(configs.get("review_dim", configs.get("bert_whitening_dim", 64)), 64)
-        self.max_rel_bucket = 149
-        self.time_percentile = 90.0
+        self.max_rel_bucket = self._coerce_int(configs.get("max_rel_bucket", 100), 100)
+        self.time_percentile = float(configs.get("time_percentile", 10.0))
 
         self.user_review_padding_id = self.num_users
         self.item_review_padding_id = self.num_items
@@ -96,7 +102,11 @@ class SSGDataset(RecDataset):
         self.timestamps = torch.tensor(df["timestamp"].tolist(), dtype=torch.float32)
 
         self.pad_idx = 0
-        if self.review_input_mode == "token":
+        if train_dataset is not None:
+            self.pad_idx = train_dataset.pad_idx
+            self.word_to_idx = train_dataset.word_to_idx
+            self.embedding_matrix = train_dataset.embedding_matrix.clone()
+        elif self.review_input_mode == "token":
             vocab_tokens = self._collect_vocab_tokens(df)
             self.word_to_idx = self._build_word_to_idx(vocab_tokens)
             self.embedding_matrix = self._load_glove(
@@ -130,7 +140,15 @@ class SSGDataset(RecDataset):
         self.graph_adj = None
         self.graph_reviews = None
         self.graph_ratings = None
+        self.graph_nodes = None
         self.time_scale = 1.0
+
+        if train_dataset is not None:
+            self.graph_adj = train_dataset.graph_adj
+            self.graph_reviews = train_dataset.graph_reviews
+            self.graph_ratings = train_dataset.graph_ratings
+            self.graph_nodes = train_dataset.graph_nodes
+            self.time_scale = train_dataset.time_scale
 
         if split == "train":
             self._initialize_context(self.interactions, self.review_lookup_by_user, self.review_lookup_by_item)
@@ -261,7 +279,6 @@ class SSGDataset(RecDataset):
         review_lookup_by_user: ReviewLookup,
         review_lookup_by_item: ReviewLookup,
     ) -> None:
-        del history_interactions
         (
             self.user_review_tensors,
             self.item_review_tensors,
@@ -284,12 +301,10 @@ class SSGDataset(RecDataset):
         ) = self._build_sequence_context_tensors(self.interactions, review_lookup_by_user, review_lookup_by_item, self.time_scale)
 
         if self.use_graph_view:
-            self.graph_adj, self.graph_reviews, self.graph_ratings = self._build_graph_tensors(
-                self.interactions,
-                review_lookup_by_user,
-                review_lookup_by_item,
-            )
+            if self.split == "train" or self.graph_adj is None or self.graph_reviews is None or self.graph_ratings is None:
+                self.graph_nodes, self.graph_adj, self.graph_reviews, self.graph_ratings = self._build_full_graph_tensors(history_interactions)
         else:
+            self.graph_nodes = None
             self.graph_adj = None
             self.graph_reviews = None
             self.graph_ratings = None
@@ -477,55 +492,25 @@ class SSGDataset(RecDataset):
             return 1.0
         return max(float(np.percentile(np.asarray(non_zero_rel_dt, dtype=np.float32), self.time_percentile)), 1.0)
 
-    def _build_graph_tensors(
-        self,
-        target_interactions: list[Interaction],
-        review_lookup_by_user: ReviewLookup,
-        review_lookup_by_item: ReviewLookup,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        graph_adj: list[torch.Tensor] = []
-        graph_reviews: list[torch.Tensor] = []
-        graph_ratings: list[torch.Tensor] = []
+    def _build_full_graph_tensors(self, interactions: list[Interaction]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        edge_index = torch.empty((2, len(interactions)), dtype=torch.long)
+        if self.review_input_mode == "embedding":
+            edge_reviews = torch.zeros((len(interactions), self.review_dim), dtype=torch.float32)
+        else:
+            edge_reviews = torch.full((len(interactions), self.review_length), self.pad_idx, dtype=torch.long)
+        edge_ratings = torch.zeros(len(interactions), dtype=torch.float32)
 
-        for user_id, item_id, _, _, _, _, _ in target_interactions:
-            selected_user_entries = self._select_set_entries(review_lookup_by_user, user_id, user_id, item_id)
-            selected_item_entries = self._select_set_entries(review_lookup_by_item, item_id, user_id, item_id)
-
-            unique_entries: list[Interaction] = []
-            seen_edges: set[tuple[int, int, float]] = set()
-            for entry in selected_user_entries + selected_item_entries:
-                edge_key = (entry[0], entry[1], entry[3])
-                if edge_key in seen_edges:
-                    continue
-                seen_edges.add(edge_key)
-                unique_entries.append(entry)
-                if len(unique_entries) >= self.graph_edge_count:
-                    break
-
-            edge_index = torch.full((2, self.graph_edge_count), -1, dtype=torch.long)
+        for edge_idx, entry in enumerate(interactions):
+            edge_index[0, edge_idx] = entry[0]
+            edge_index[1, edge_idx] = self.num_users + entry[1]
             if self.review_input_mode == "embedding":
-                edge_reviews = torch.zeros((self.graph_edge_count, self.review_dim), dtype=torch.float32)
+                edge_reviews[edge_idx] = entry[6]
             else:
-                edge_reviews = torch.full((self.graph_edge_count, self.review_length), self.pad_idx, dtype=torch.long)
-            edge_ratings = torch.zeros(self.graph_edge_count, dtype=torch.float32)
+                edge_reviews[edge_idx] = torch.tensor(self._adjust_review_tokens([entry[4]], 1)[0], dtype=torch.long)
+            edge_ratings[edge_idx] = float(entry[2])
 
-            for edge_idx, entry in enumerate(unique_entries):
-                edge_index[0, edge_idx] = entry[0]
-                edge_index[1, edge_idx] = entry[1]
-                if self.review_input_mode == "embedding":
-                    edge_reviews[edge_idx] = entry[6]
-                else:
-                    edge_reviews[edge_idx] = torch.tensor(
-                        self._adjust_review_tokens([entry[4]], 1)[0],
-                        dtype=torch.long,
-                    )
-                edge_ratings[edge_idx] = float(entry[2])
-
-            graph_adj.append(edge_index)
-            graph_reviews.append(edge_reviews)
-            graph_ratings.append(edge_ratings)
-
-        return torch.stack(graph_adj), torch.stack(graph_reviews), torch.stack(graph_ratings)
+        graph_nodes = torch.arange(self.num_users + self.num_items, dtype=torch.long)
+        return graph_nodes, edge_index, edge_reviews, edge_ratings
 
     def _setup_evaluation(self, train_df: pd.DataFrame, valid_df: pd.DataFrame, test_df: pd.DataFrame) -> None:
         del valid_df, test_df
@@ -616,8 +601,21 @@ class SSGDataset(RecDataset):
         if self.use_graph_view:
             if self.graph_adj is None or self.graph_reviews is None or self.graph_ratings is None:
                 raise RuntimeError("Graph tensors must be initialized when use_graph_view=True.")
-            sample["graph_adj"] = self.graph_adj[idx].clone().detach()
-            sample["graph_reviews"] = self.graph_reviews[idx].clone().detach()
-            sample["graph_ratings"] = self.graph_ratings[idx].clone().detach()
+            sample["graph_adj"] = self.graph_adj
+            sample["graph_reviews"] = self.graph_reviews
+            sample["graph_ratings"] = self.graph_ratings
 
         return sample
+
+
+def ssg_collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+    if not batch:
+        return {}
+
+    collated: dict[str, torch.Tensor] = {}
+    for key in batch[0]:
+        if key in {"graph_adj", "graph_reviews", "graph_ratings"}:
+            collated[key] = batch[0][key]
+        else:
+            collated[key] = torch.stack([sample[key] for sample in batch], dim=0)
+    return collated

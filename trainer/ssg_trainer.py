@@ -15,7 +15,7 @@ from metric import print_results
 class SSGTrainer(BaseTrainer):
     def __init__(self, model, train_dataloader, valid_dataloader, test_dataloader, configs):
         super().__init__(model, train_dataloader, valid_dataloader, test_dataloader, configs)
-        self.gamma = float(configs.get("gamma", 0.95))
+        self.gamma = float(configs.get("gamma", configs.get("lr_decay", 0.95)))
         self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=self.gamma)
 
     def _prepare_inputs(self, batch):

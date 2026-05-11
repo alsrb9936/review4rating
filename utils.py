@@ -47,6 +47,8 @@ def _load_cached_review_embeddings(path):
 
 def _embedding_cache_path(configs, dataset: str, backend: str, model_name: str) -> str:
     safe_model = model_name.split("/")[-1]
+    if backend == "sentence_transformer":
+        return f"{configs['embedding_path']}/{dataset}/{safe_model}.pt"
     if backend == "bert_whitening":
         dim = int(configs.get("bert_whitening_dim", configs.get("review_dim", 64)))
         pooling = configs.get("bert_whitening_pooling", "cls")
@@ -339,11 +341,20 @@ def get_dataloader(train_df, valid_df, test_df, configs):
         max(train_df["item_id"].max(), valid_df["item_id"].max(), test_df["item_id"].max())
     ) + 1
 
-    train_dataset = dataset_cls(train_df, configs, split="train")
     if model_name == "narre":
-        valid_dataset = dataset_cls(valid_df, configs, split="valid", train_dataset=train_dataset)
-        test_dataset = dataset_cls(test_df, configs, split="test", train_dataset=train_dataset)
+        from data.narre_dataset import NARREDataset
+
+        train_dataset = NARREDataset(train_df, configs, split="train")
+        valid_dataset = NARREDataset(valid_df, configs, split="valid", train_dataset=train_dataset)
+        test_dataset = NARREDataset(test_df, configs, split="test", train_dataset=train_dataset)
+    elif model_name == "ssg":
+        from data.ssg_dataset import SSGDataset
+
+        train_dataset = SSGDataset(train_df, configs, split="train")
+        valid_dataset = SSGDataset(valid_df, configs, split="valid", train_dataset=train_dataset)
+        test_dataset = SSGDataset(test_df, configs, split="test", train_dataset=train_dataset)
     else:
+        train_dataset = dataset_cls(train_df, configs, split="train")
         valid_dataset = dataset_cls(valid_df, configs, split="valid")
         test_dataset = dataset_cls(test_df, configs, split="test")
 
@@ -369,6 +380,11 @@ def get_dataloader(train_df, valid_df, test_df, configs):
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=sgdn_collate_fn)
         valid_dataloader = DataLoader(valid_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=sgdn_collate_fn)
         test_dataloader = DataLoader(test_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=sgdn_collate_fn)
+    elif model_name == 'ssg':
+        from data.ssg_dataset import ssg_collate_fn
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=ssg_collate_fn)
+        valid_dataloader = DataLoader(valid_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=ssg_collate_fn)
+        test_dataloader = DataLoader(test_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=ssg_collate_fn)
     else:
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         valid_dataloader = DataLoader(valid_dataset, batch_size=eval_batch_size, shuffle=False)
