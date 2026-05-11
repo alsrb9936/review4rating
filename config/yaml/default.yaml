@@ -20,3 +20,11 @@ embedding_path: "/home/infolab/mnt/mingyu/review_rec/cached/embedding"
 sentiment_path: "/home/infolab/mnt/mingyu/review_rec/cached/sentiment"
 sentiment_model: "cardiffnlp/twitter-roberta-base-sentiment-latest"
 language_model: "sentence-transformers/all-MiniLM-L12-v2"
+review_feature_backend: "sentence_transformer"  # sentence_transformer | bert_whitening | cached
+review_emb_path: null
+bert_whitening_model: "bert-base-uncased"
+bert_whitening_dim: 64
+bert_whitening_pooling: "cls"  # cls | mean
+bert_whitening_normalize: true
+bert_whitening_stats_path: null
+review_input_mode: "token"  # token | embedding

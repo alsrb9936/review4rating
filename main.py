@@ -7,7 +7,7 @@ import json
 
 from config import Config
 from model import MODEL_DICT
-from utils import set_seed, load_interaction_data, split_by_ratio, get_dataloader
+from utils import attach_bert_whitening_review_features, set_seed, load_interaction_data, split_by_ratio, get_dataloader
 from trainer import MODEL_TRAINER_DICT
 from metric import print_results
 
@@ -105,6 +105,9 @@ def args_parser():
     parser.add_argument("--eval_step", type=int, default=None, help="Evaluation every N epochs")
     parser.add_argument("--sentiment", type=bool, default=False, help="Only evaluate the model")
     parser.add_argument("--review_emb_path", type=str, default=None, help="Path to precomputed review embeddings")
+    parser.add_argument("--review_feature_backend", type=str, default=None, choices=["sentence_transformer", "bert_whitening", "cached"], help="Review feature backend")
+    parser.add_argument("--bert_whitening_dim", type=int, default=None, help="Output dimension for BERT-Whitening review features")
+    parser.add_argument("--review_input_mode", type=str, default=None, choices=["token", "embedding"], help="SSG review input mode")
     parser.add_argument("--overfit_n", type=int, default=None, help="Train on only N interactions for overfit debugging")
     parser.add_argument("--loss_preset", type=str, default=None, help="IARD loss preset: rating_only, review_fusion, align_only, full_iard, full_no_sep, full_no_residual_pred, full_fixed_gate, full_eta_0_3, full_low_align")
     
@@ -135,6 +138,7 @@ def prepare_data(configs):
             f"overfit mode enabled: using the same {overfit_n} train interactions for train/valid/test. "
             "These metrics are debug-only and intentionally leak train data into validation/test."
         )
+    train_df, valid_df, test_df = attach_bert_whitening_review_features(train_df, valid_df, test_df, configs)
     train_loader, valid_loader, test_loader = get_dataloader(train_df, valid_df, test_df, configs)
     return {
         'train_df': train_df,
@@ -215,6 +219,13 @@ def eval_mode(args):
     configs['gpu'] = args.gpu
     if args.review_emb_path is not None:
         configs['review_emb_path'] = args.review_emb_path
+    if args.review_feature_backend is not None:
+        configs['review_feature_backend'] = args.review_feature_backend
+    if args.bert_whitening_dim is not None:
+        configs['bert_whitening_dim'] = args.bert_whitening_dim
+        configs['review_dim'] = args.bert_whitening_dim
+    if args.review_input_mode is not None:
+        configs['review_input_mode'] = args.review_input_mode
     if args.overfit_n is not None:
         configs['overfit_n'] = args.overfit_n
     if args.loss_preset is not None:
@@ -281,6 +292,9 @@ def main():
         'gpu': args.gpu,
         'seed': args.seed,
         'review_emb_path': args.review_emb_path,
+        'review_feature_backend': args.review_feature_backend,
+        'bert_whitening_dim': args.bert_whitening_dim,
+        'review_input_mode': args.review_input_mode,
         'overfit_n': args.overfit_n,
         'loss_preset': args.loss_preset,
     }
@@ -289,6 +303,8 @@ def main():
     configs['dataset'] = args.dataset
     configs['basemodel'] = args.model
     configs['sentiment'] = args.sentiment
+    if args.bert_whitening_dim is not None:
+        configs['review_dim'] = args.bert_whitening_dim
     apply_iard_loss_preset(configs)
     
     setup_environment(configs)

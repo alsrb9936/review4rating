@@ -12,7 +12,7 @@ import torch
 from .abstract_dataset import RecDataset
 
 
-Interaction = tuple[int, int, float, float, list[int], str]
+Interaction = tuple[int, int, float, float, list[int], str, torch.Tensor]
 ReviewLookup = dict[int, list[Interaction]]
 
 
@@ -25,6 +25,8 @@ class SSGDataset(RecDataset):
     glove_path: str
     retain_rui: bool
     use_graph_view: bool
+    review_input_mode: str
+    review_dim: int
     max_rel_bucket: int
     time_percentile: float
     user_review_padding_id: int
@@ -77,6 +79,10 @@ class SSGDataset(RecDataset):
         )
         self.retain_rui = self._coerce_bool(configs.get("retain_rui", False), False)
         self.use_graph_view = self._coerce_bool(configs.get("use_graph_view", False), False)
+        self.review_input_mode = self._coerce_str(configs.get("review_input_mode", "token"), "token")
+        if self.review_input_mode not in {"token", "embedding"}:
+            raise ValueError("review_input_mode must be 'token' or 'embedding'.")
+        self.review_dim = self._coerce_int(configs.get("review_dim", configs.get("bert_whitening_dim", 64)), 64)
         self.max_rel_bucket = 149
         self.time_percentile = 90.0
 
@@ -89,15 +95,19 @@ class SSGDataset(RecDataset):
         self.ratings = torch.tensor(df["rating"].tolist(), dtype=torch.float32)
         self.timestamps = torch.tensor(df["timestamp"].tolist(), dtype=torch.float32)
 
-        vocab_tokens = self._collect_vocab_tokens(df)
         self.pad_idx = 0
-        self.word_to_idx = self._build_word_to_idx(vocab_tokens)
-        self.embedding_matrix = self._load_glove(
-            self.glove_path,
-            self.word_dim,
-            vocab_tokens,
-            self.word_to_idx,
-        )
+        if self.review_input_mode == "token":
+            vocab_tokens = self._collect_vocab_tokens(df)
+            self.word_to_idx = self._build_word_to_idx(vocab_tokens)
+            self.embedding_matrix = self._load_glove(
+                self.glove_path,
+                self.word_dim,
+                vocab_tokens,
+                self.word_to_idx,
+            )
+        else:
+            self.word_to_idx = {"<pad>": self.pad_idx}
+            self.embedding_matrix = torch.zeros((1, self.word_dim), dtype=torch.float32)
 
         self.interactions = self._build_interactions(df)
         self.review_lookup_by_user = self._build_review_lookups(self.interactions, use_user_key=True)
@@ -214,9 +224,24 @@ class SSGDataset(RecDataset):
                     float(getattr(row, "timestamp")),
                     self._tokens_to_ids(review_text),
                     review_text,
+                    self._row_review_embedding(row),
                 )
             )
         return interactions
+
+    def _row_review_embedding(self, row: object) -> torch.Tensor:
+        if self.review_input_mode != "embedding":
+            return torch.zeros(self.review_dim, dtype=torch.float32)
+        value = getattr(row, "review_embedding", None)
+        if isinstance(value, torch.Tensor):
+            embedding = value.float().view(-1)
+        elif value is None or (isinstance(value, float) and np.isnan(value)):
+            embedding = torch.zeros(self.review_dim, dtype=torch.float32)
+        else:
+            embedding = torch.tensor(value, dtype=torch.float32).view(-1)
+        if embedding.numel() != self.review_dim:
+            raise ValueError(f"SSG embedding mode expected review_dim={self.review_dim}, got {embedding.numel()}.")
+        return embedding
 
     @staticmethod
     def _build_review_lookups(interactions: list[Interaction], use_user_key: bool) -> ReviewLookup:
@@ -275,6 +300,12 @@ class SSGDataset(RecDataset):
             adjusted = adjusted + [[self.pad_idx] * self.review_length for _ in range(limit - len(adjusted))]
         return [review[: self.review_length] + [self.pad_idx] * max(0, self.review_length - len(review)) for review in adjusted]
 
+    def _adjust_review_embeddings(self, reviews: list[torch.Tensor], limit: int) -> torch.Tensor:
+        adjusted = reviews[:limit]
+        if len(adjusted) < limit:
+            adjusted = adjusted + [torch.zeros(self.review_dim, dtype=torch.float32) for _ in range(limit - len(adjusted))]
+        return torch.stack([review.float().view(-1) for review in adjusted], dim=0)
+
     def _adjust_side_ids(self, side_ids: list[int], limit: int, padding_id: int) -> list[int]:
         adjusted = side_ids[:limit]
         if len(adjusted) < limit:
@@ -312,16 +343,20 @@ class SSGDataset(RecDataset):
         user_review_item_ids: list[torch.Tensor] = []
         item_review_user_ids: list[torch.Tensor] = []
 
-        for user_id, item_id, _, _, _, _ in target_interactions:
+        for user_id, item_id, _, _, _, _, _ in target_interactions:
             user_entries = self._select_set_entries(review_lookup_by_user, user_id, user_id, item_id)
             item_entries = self._select_set_entries(review_lookup_by_item, item_id, user_id, item_id)
 
-            user_reviews.append(
-                torch.tensor(self._adjust_review_tokens([entry[4] for entry in user_entries], self.review_count), dtype=torch.long)
-            )
-            item_reviews.append(
-                torch.tensor(self._adjust_review_tokens([entry[4] for entry in item_entries], self.review_count), dtype=torch.long)
-            )
+            if self.review_input_mode == "embedding":
+                user_reviews.append(self._adjust_review_embeddings([entry[6] for entry in user_entries], self.review_count))
+                item_reviews.append(self._adjust_review_embeddings([entry[6] for entry in item_entries], self.review_count))
+            else:
+                user_reviews.append(
+                    torch.tensor(self._adjust_review_tokens([entry[4] for entry in user_entries], self.review_count), dtype=torch.long)
+                )
+                item_reviews.append(
+                    torch.tensor(self._adjust_review_tokens([entry[4] for entry in item_entries], self.review_count), dtype=torch.long)
+                )
             user_review_item_ids.append(
                 torch.tensor(
                     self._adjust_side_ids([entry[1] for entry in user_entries], self.review_count, self.item_review_padding_id),
@@ -350,7 +385,10 @@ class SSGDataset(RecDataset):
         limited_entries = entries[: self.seq_count]
         seq_len = torch.tensor(min(len(entries), self.seq_count), dtype=torch.long)
 
-        reviews = self._adjust_review_tokens([entry[4] for entry in limited_entries], self.seq_count)
+        if self.review_input_mode == "embedding":
+            reviews_tensor = self._adjust_review_embeddings([entry[6] for entry in limited_entries], self.seq_count)
+        else:
+            reviews_tensor = torch.tensor(self._adjust_review_tokens([entry[4] for entry in limited_entries], self.seq_count), dtype=torch.long)
         seq_len_value = len(limited_entries)
         pos_ind = [seq_len_value - position for position in range(seq_len_value)]
         rel_dt = [min(int(max(float(target_ts) - entry[3], 0.0) / self.time_scale), self.max_rel_bucket) for entry in limited_entries]
@@ -363,7 +401,7 @@ class SSGDataset(RecDataset):
             abs_dt.extend([0.0] * pad_size)
 
         return (
-            torch.tensor(reviews, dtype=torch.long),
+            reviews_tensor,
             seq_len,
             torch.tensor(pos_ind, dtype=torch.long),
             torch.tensor(rel_dt, dtype=torch.long),
@@ -389,7 +427,7 @@ class SSGDataset(RecDataset):
         user_abs_dt: list[torch.Tensor] = []
         item_abs_dt: list[torch.Tensor] = []
 
-        for user_id, item_id, _, timestamp, _, _ in target_interactions:
+        for user_id, item_id, _, timestamp, _, _, _ in target_interactions:
             user_entries = self._select_sequence_entries(review_lookup_by_user, user_id, user_id, item_id, timestamp)
             item_entries = self._select_sequence_entries(review_lookup_by_item, item_id, user_id, item_id, timestamp)
 
@@ -428,7 +466,7 @@ class SSGDataset(RecDataset):
     ) -> float:
         non_zero_rel_dt: list[float] = []
 
-        for user_id, item_id, _, timestamp, _, _ in target_interactions:
+        for user_id, item_id, _, timestamp, _, _, _ in target_interactions:
             for entries, query_id in ((review_lookup_by_user, user_id), (review_lookup_by_item, item_id)):
                 for entry in self._select_sequence_entries(entries, query_id, user_id, item_id, timestamp):
                     rel_dt = float(timestamp) - entry[3]
@@ -449,7 +487,7 @@ class SSGDataset(RecDataset):
         graph_reviews: list[torch.Tensor] = []
         graph_ratings: list[torch.Tensor] = []
 
-        for user_id, item_id, _, _, _, _ in target_interactions:
+        for user_id, item_id, _, _, _, _, _ in target_interactions:
             selected_user_entries = self._select_set_entries(review_lookup_by_user, user_id, user_id, item_id)
             selected_item_entries = self._select_set_entries(review_lookup_by_item, item_id, user_id, item_id)
 
@@ -465,16 +503,22 @@ class SSGDataset(RecDataset):
                     break
 
             edge_index = torch.full((2, self.graph_edge_count), -1, dtype=torch.long)
-            edge_reviews = torch.full((self.graph_edge_count, self.review_length), self.pad_idx, dtype=torch.long)
+            if self.review_input_mode == "embedding":
+                edge_reviews = torch.zeros((self.graph_edge_count, self.review_dim), dtype=torch.float32)
+            else:
+                edge_reviews = torch.full((self.graph_edge_count, self.review_length), self.pad_idx, dtype=torch.long)
             edge_ratings = torch.zeros(self.graph_edge_count, dtype=torch.float32)
 
             for edge_idx, entry in enumerate(unique_entries):
                 edge_index[0, edge_idx] = entry[0]
                 edge_index[1, edge_idx] = entry[1]
-                edge_reviews[edge_idx] = torch.tensor(
-                    self._adjust_review_tokens([entry[4]], 1)[0],
-                    dtype=torch.long,
-                )
+                if self.review_input_mode == "embedding":
+                    edge_reviews[edge_idx] = entry[6]
+                else:
+                    edge_reviews[edge_idx] = torch.tensor(
+                        self._adjust_review_tokens([entry[4]], 1)[0],
+                        dtype=torch.long,
+                    )
                 edge_ratings[edge_idx] = float(entry[2])
 
             graph_adj.append(edge_index)

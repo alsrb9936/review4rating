@@ -37,6 +37,7 @@ class Config(dict[str, Any]):
             "dropout",
             "node_dropout",
             "review_dim",
+            "review_input_mode",
             "use_review",
             "symm",
             "use_contrastive",
@@ -70,6 +71,12 @@ class Config(dict[str, Any]):
         },
         "data": {
             "review_emb_path",
+            "review_feature_backend",
+            "bert_whitening_model",
+            "bert_whitening_dim",
+            "bert_whitening_pooling",
+            "bert_whitening_normalize",
+            "bert_whitening_stats_path",
         },
     }
     """

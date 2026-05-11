@@ -27,6 +27,10 @@ class SSG(AbstractRec):
         self.gru_dim = self._get_int_config("gru_dim", 100)
         self.time_dim = self._get_int_config("time_dim", 32)
         self.latent_dim = self._get_int_config("latent_dim", 32)
+        self.review_dim = self._get_int_config("review_dim", self._get_int_config("bert_whitening_dim", 64))
+        self.review_input_mode = str(self.configs.get("review_input_mode", "token"))
+        if self.review_input_mode not in {"token", "embedding"}:
+            raise ValueError("review_input_mode must be 'token' or 'embedding'.")
 
         self.use_set_view = self._get_bool_config("use_set_view", True)
         self.use_sequence_view = self._get_bool_config("use_sequence_view", True)
@@ -79,6 +83,8 @@ class SSG(AbstractRec):
                 for kernel_size in self.filter_sizes
             ]
         )
+        self.user_embedding_projection = nn.Linear(self.review_dim, self.cnn_out_dim)
+        self.item_embedding_projection = nn.Linear(self.review_dim, self.cnn_out_dim)
 
         self.user_review_fc = nn.Linear(self.cnn_out_dim, self.attention_size)
         self.item_review_fc = nn.Linear(self.cnn_out_dim, self.attention_size)
@@ -241,6 +247,18 @@ class SSG(AbstractRec):
         combined = cast(torch.Tensor, torch.cat(conv_outputs, dim=1))
         return combined.reshape(batch_size, review_count, self.cnn_out_dim)
 
+    def _encode_review_inputs(
+        self,
+        reviews: torch.Tensor,
+        convs: nn.ModuleList,
+        projection: nn.Linear,
+    ) -> torch.Tensor:
+        if self.review_input_mode == "embedding":
+            if reviews.dim() != 3 or reviews.size(-1) != self.review_dim:
+                raise ValueError(f"Expected review embeddings with shape [B, R, {self.review_dim}].")
+            return cast(torch.Tensor, projection(reviews.float()))
+        return self._encode_review_tokens(reviews.long(), convs)
+
     def _masked_id_attention(
         self,
         review_features: torch.Tensor,
@@ -321,6 +339,10 @@ class SSG(AbstractRec):
         return cast(torch.Tensor, torch.sum(attention.unsqueeze(-1) * gru_outputs, dim=1))
 
     def _pool_graph_reviews(self, graph_reviews: torch.Tensor) -> torch.Tensor:
+        if self.review_input_mode == "embedding":
+            if graph_reviews.dim() != 2 or graph_reviews.size(1) != self.review_dim:
+                raise ValueError(f"Expected graph review embeddings with shape [E, {self.review_dim}].")
+            return cast(torch.Tensor, self.user_embedding_projection(graph_reviews.float()))
         if graph_reviews.dim() == 2:
             graph_reviews = graph_reviews.unsqueeze(1)
         if graph_reviews.dim() != 3:
@@ -456,6 +478,11 @@ class SSG(AbstractRec):
             raise ValueError("Expected user_review with shape [B, R, L].")
         if user_seq_reviews is not None and user_seq_reviews.dim() != 3:
             raise ValueError("Expected user_seq_reviews with shape [B, S, L].")
+        expected_last_dim = self.review_dim if self.review_input_mode == "embedding" else self.review_length
+        if user_review.size(-1) != expected_last_dim:
+            raise ValueError(f"Expected user_review last dim {expected_last_dim}, got {user_review.size(-1)}.")
+        if user_seq_reviews is not None and user_seq_reviews.size(-1) != expected_last_dim:
+            raise ValueError(f"Expected user_seq_reviews last dim {expected_last_dim}, got {user_seq_reviews.size(-1)}.")
         if graph_adj is not None and (graph_adj.dim() != 3 or graph_adj.size(1) != 2):
             raise ValueError("Expected graph_adj with shape [B, 2, E].")
         if graph_reviews is not None and graph_reviews.dim() != 3:
@@ -507,8 +534,8 @@ class SSG(AbstractRec):
         del user_abs_dt, item_abs_dt
         self._assert_and_log_shapes(user_review, user_seq_reviews, graph_adj, graph_reviews)
 
-        user_review_features = self._encode_review_tokens(user_review, self.user_convs)
-        item_review_features = self._encode_review_tokens(item_review, self.item_convs)
+        user_review_features = self._encode_review_inputs(user_review, self.user_convs, self.user_embedding_projection)
+        item_review_features = self._encode_review_inputs(item_review, self.item_convs, self.item_embedding_projection)
 
         user_set = self._masked_id_attention(
             review_features=user_review_features,
@@ -532,11 +559,11 @@ class SSG(AbstractRec):
         )
 
         if user_seq_reviews is not None:
-            user_seq_features = self._encode_review_tokens(user_seq_reviews, self.user_convs)
+            user_seq_features = self._encode_review_inputs(user_seq_reviews, self.user_convs, self.user_embedding_projection)
         else:
             user_seq_features = user_review_features[:, : min(user_review_features.size(1), self.seq_count), :]
         if item_seq_reviews is not None:
-            item_seq_features = self._encode_review_tokens(item_seq_reviews, self.item_convs)
+            item_seq_features = self._encode_review_inputs(item_seq_reviews, self.item_convs, self.item_embedding_projection)
         else:
             item_seq_features = item_review_features[:, : min(item_review_features.size(1), self.seq_count), :]
         if user_pos_ind is not None:

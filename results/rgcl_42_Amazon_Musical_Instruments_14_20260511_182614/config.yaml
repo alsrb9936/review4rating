@@ -1,0 +1,86 @@
+training:
+  batch: 1
+  training:
+    batch: 1
+    eval_batch: 1
+    epoch: 400
+    lr: 0.001
+    weight_decay: 0.0
+    grad_clip: 1.0
+  eval_batch: 1
+  epoch: 5
+  lr: 0.001
+  weight_decay: 0.0
+  early_stop_patience: 50
+  evaluation:
+    early_stop_patience: 50
+    eval_step: 1
+  grad_clip: 1.0
+  eval_step: 1
+  overfit_n: 100
+evaluation:
+  eval_step: 1
+  evaluation:
+    eval_step: 1
+    early_stop_patience: 10
+    best_metric_name: rmse
+    metrics: &id001
+    - rmse
+    - mse
+    - mae
+  early_stop_patience: 10
+  best_metric_name: rmse
+  metrics: *id001
+model:
+  embedding_size: 64
+  model:
+    embedding_size: 64
+    dropout_prob: 0.1
+    name: rgcl
+    num_layers: 1
+    dropout: 0.3
+    node_dropout: 0.8
+    review_dim: 384
+    use_review: true
+    symm: true
+    use_contrastive: true
+    nd_weight: 0.3
+    ed_weight: 1.0
+    classification: false
+  dropout_prob: 0.1
+  review_input_mode: token
+  name: rgcl
+  num_layers: 1
+  dropout: 0.3
+  node_dropout: 0.8
+  review_dim: 64
+  use_review: true
+  symm: true
+  use_contrastive: true
+  nd_weight: 0.3
+  ed_weight: 1.0
+  classification: false
+data:
+  review_feature_backend: bert_whitening
+  review_emb_path: null
+  bert_whitening_model: bert-base-uncased
+  bert_whitening_dim: 64
+  bert_whitening_pooling: cls
+  bert_whitening_normalize: true
+  bert_whitening_stats_path: results/rgcl_42_Amazon_Musical_Instruments_14_20260511_182614/bert_whitening_stats_bert-base-uncased_cls_64.pt
+  use_cached_graphs: true
+data_path: /home/infolab/mnt/mingyu/review_rec/dataset
+other_path: /home/infolab/mnt/mingyu/review_rec/cached/others
+embedding_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding
+sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
+sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
+language_model: sentence-transformers/all-MiniLM-L12-v2
+use_cached_graphs: true
+gpu: 3
+seed: 42
+dataset: Amazon_Musical_Instruments_14
+basemodel: rgcl
+sentiment: false
+result_path: results/rgcl_42_Amazon_Musical_Instruments_14_20260511_182614
+num_users: 1417
+num_items: 859

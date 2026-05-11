@@ -13,7 +13,8 @@ model:
   node_dropout: 0.8
   
   # Review feature settings
-  review_dim: 384  # Sentence transformer embedding dimension
+  # sentence_transformer default is 384; CLI --bert_whitening_dim also sets review_dim.
+  review_dim: 384
   use_review: true  # Whether to use review features
   symm: true  # Symmetric normalization
   
