@@ -4,6 +4,7 @@ from .narre_dataset import NARREDataset
 from .ssg_dataset import SSGDataset
 from .rgcl_dataset import RGCLDataset
 from .iard_rm_dataset import IARDRMDataset
+from .sgdn_dataset import SGDNDataset
 
 DATASET_DICT = {
     "neumf": NeuMFDataset,
@@ -12,4 +13,5 @@ DATASET_DICT = {
     "ssg": SSGDataset,
     "rgcl": RGCLDataset,
     "iard_rm": IARDRMDataset,
+    "sgdn": SGDNDataset,
 }

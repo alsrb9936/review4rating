@@ -4,6 +4,7 @@ from .narre import NARRE
 from .ssg import SSG
 from .rgcl import RGCL
 from .iard_rm import IARDRM
+from .sgdn import SGDN
 
 
 MODEL_DICT = {
@@ -13,4 +14,5 @@ MODEL_DICT = {
     "ssg": SSG,
     "rgcl": RGCL,
     "iard_rm": IARDRM,
+    "sgdn": SGDN,
 }

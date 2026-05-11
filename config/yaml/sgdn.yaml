@@ -1,0 +1,52 @@
+# SGDN Configuration
+# Self-supervised Graph Disentangled Networks for Review-based Recommendation
+
+model:
+  name: "sgdn"
+  
+  # Embedding dimensions
+  embedding_size: 64
+  hidden_dim: 64
+  
+  # Graph convolution settings
+  num_layers: 1
+  dropout: 0.3
+  
+  # Review feature settings
+  review_dim: 384  # Sentence transformer embedding dimension
+  use_review: true  # Whether to use review features
+  symm: true  # Symmetric normalization
+  
+  # Disentangled representation settings
+  num_factors: 4  # Number of latent factors (K)
+  
+  # Contrastive learning settings
+  use_contrastive: true
+  cl_weight: 0.1
+  temperature: 0.2
+  num_pos: 1
+  num_neg: 64
+  
+  # Disentanglement regularization
+  disentangle_weight: 0.01
+  
+  # Prediction mode
+  classification: false
+
+training:
+  batch: 1
+  eval_batch: 1
+  epoch: 400
+  lr: 0.001
+  weight_decay: 0.0
+  early_stop_patience: 50
+  grad_clip: 1.0  # Gradient clipping threshold
+  eval_step: 1
+
+evaluation:
+  best_metric_name: "rmse"
+  metrics: ["rmse", "mse", "mae"]
+
+# Data paths and settings
+data:
+  use_cached_graphs: true  # Cache constructed graphs
