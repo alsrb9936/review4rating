@@ -20,10 +20,23 @@ class NARRE(AbstractRec):
         self.review_count = self._get_int_config("review_count", 10)
         self.word_dim = self._get_int_config("word_dim", 50)
         self.kernel_count = self._get_int_config("kernel_count", 100)
-        self.kernel_size = self._get_int_config("kernel_size", 3)
         self.id_dim = self._get_int_config("id_dim", 32)
         self.attention_size = self._get_int_config("attention_size", 32)
         self.dropout_prob = self._get_float_config("dropout_prob", 0.5)
+        self.l2_reg_lambda = self._get_float_config("l2_reg_lambda", 0.0)
+        self.freeze_word_embedding = bool(configs.get("freeze_word_embedding", False))
+        self.mask_padding_attention = bool(configs.get("mask_padding_attention", True))
+
+        filter_sizes_raw = configs.get("filter_sizes")
+        if filter_sizes_raw is not None:
+            if isinstance(filter_sizes_raw, (list, tuple)):
+                self.filter_sizes = [int(x) for x in filter_sizes_raw]
+            else:
+                self.filter_sizes = [int(x.strip()) for x in str(filter_sizes_raw).split(",")]
+        else:
+            self.filter_sizes = [self._get_int_config("kernel_size", 3)]
+
+        self.conv_output_dim = self.kernel_count * len(self.filter_sizes)
 
         self.num_users = int(getattr(train_dataset, "num_users"))
         self.num_items = int(getattr(train_dataset, "num_items"))
@@ -52,41 +65,71 @@ class NARRE(AbstractRec):
                 )
             )
 
-        conv_padding = (self.kernel_size - 1) // 2
+        vocab_size = len(getattr(train_dataset, "word_to_idx"))
+        assert user_embedding_weight.size(0) == vocab_size, (
+            "User embedding rows ({}) != vocab size ({})".format(
+                user_embedding_weight.size(0), vocab_size
+            )
+        )
+        assert item_embedding_weight.size(0) == vocab_size, (
+            "Item embedding rows ({}) != vocab size ({})".format(
+                item_embedding_weight.size(0), vocab_size
+            )
+        )
+
+        if len(self.filter_sizes) == 1:
+            self.user_conv = nn.Conv1d(
+                in_channels=self.word_dim,
+                out_channels=self.kernel_count,
+                kernel_size=self.filter_sizes[0],
+                padding=0,
+            )
+            self.item_conv = nn.Conv1d(
+                in_channels=self.word_dim,
+                out_channels=self.kernel_count,
+                kernel_size=self.filter_sizes[0],
+                padding=0,
+            )
+        else:
+            self.user_conv = nn.ModuleList([
+                nn.Conv1d(
+                    in_channels=self.word_dim,
+                    out_channels=self.kernel_count,
+                    kernel_size=ks,
+                    padding=0,
+                )
+                for ks in self.filter_sizes
+            ])
+            self.item_conv = nn.ModuleList([
+                nn.Conv1d(
+                    in_channels=self.word_dim,
+                    out_channels=self.kernel_count,
+                    kernel_size=ks,
+                    padding=0,
+                )
+                for ks in self.filter_sizes
+            ])
 
         self.user_word_embedding = nn.Embedding.from_pretrained(
             user_embedding_weight,
-            freeze=False,
+            freeze=self.freeze_word_embedding,
             padding_idx=self.pad_idx,
         )
         self.item_word_embedding = nn.Embedding.from_pretrained(
             item_embedding_weight,
-            freeze=False,
+            freeze=self.freeze_word_embedding,
             padding_idx=self.pad_idx,
         )
 
-        self.user_conv = nn.Conv1d(
-            in_channels=self.word_dim,
-            out_channels=self.kernel_count,
-            kernel_size=self.kernel_size,
-            padding=conv_padding,
-        )
-        self.item_conv = nn.Conv1d(
-            in_channels=self.word_dim,
-            out_channels=self.kernel_count,
-            kernel_size=self.kernel_size,
-            padding=conv_padding,
-        )
-
-        self.user_review_fc = nn.Linear(self.kernel_count, self.attention_size)
-        self.item_review_fc = nn.Linear(self.kernel_count, self.attention_size)
+        self.user_review_fc = nn.Linear(self.conv_output_dim, self.attention_size)
+        self.item_review_fc = nn.Linear(self.conv_output_dim, self.attention_size)
         self.user_id_attention_fc = nn.Linear(self.id_dim, self.attention_size)
         self.item_id_attention_fc = nn.Linear(self.id_dim, self.attention_size)
         self.user_attention_fc = nn.Linear(self.attention_size, 1)
         self.item_attention_fc = nn.Linear(self.attention_size, 1)
 
-        self.user_feature_fc = nn.Linear(self.kernel_count, self.id_dim)
-        self.item_feature_fc = nn.Linear(self.kernel_count, self.id_dim)
+        self.user_feature_fc = nn.Linear(self.conv_output_dim, self.id_dim)
+        self.item_feature_fc = nn.Linear(self.conv_output_dim, self.id_dim)
 
         self.user_id_embedding = nn.Embedding(self.num_users, self.id_dim)
         self.item_id_embedding = nn.Embedding(self.num_items, self.id_dim)
@@ -166,7 +209,7 @@ class NARRE(AbstractRec):
     def _encode_reviews(
         self,
         review_tokens: torch.Tensor,
-        conv: nn.Conv1d,
+        conv,
         word_embedding: nn.Embedding,
     ) -> torch.Tensor:
         if review_tokens.dim() != 3:
@@ -185,9 +228,18 @@ class NARRE(AbstractRec):
         review_input = review_tokens.reshape(batch_size * review_count, review_length)
         embedded = cast(torch.Tensor, word_embedding(review_input))
         embedded = cast(torch.Tensor, embedded.transpose(1, 2))
-        conv_out = cast(torch.Tensor, self.relu(conv(embedded)))
-        pooled = cast(torch.Tensor, torch.amax(conv_out, dim=2))
-        return pooled.reshape(batch_size, review_count, self.kernel_count)
+
+        if isinstance(conv, nn.ModuleList):
+            conv_outs = [
+                cast(torch.Tensor, torch.amax(self.relu(c(embedded)), dim=2))
+                for c in conv
+            ]
+            pooled = cast(torch.Tensor, torch.cat(conv_outs, dim=1))
+        else:
+            conv_out = cast(torch.Tensor, self.relu(conv(embedded)))
+            pooled = cast(torch.Tensor, torch.amax(conv_out, dim=2))
+
+        return pooled.reshape(batch_size, review_count, self.conv_output_dim)
 
     def _masked_attention(
         self,
@@ -203,11 +255,14 @@ class NARRE(AbstractRec):
         attention_input = cast(torch.Tensor, self.relu(review_proj + id_proj))
         attention_logits = cast(torch.Tensor, attention_fc(attention_input))
 
-        mask = review_mask.unsqueeze(-1)
-        attention_logits = attention_logits.masked_fill(~mask, -1e9)
-        attention = cast(torch.Tensor, torch.softmax(attention_logits, dim=1))
-        attention = attention * mask.to(dtype=attention.dtype)
-        attention = attention / attention.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        if self.mask_padding_attention:
+            mask = review_mask.unsqueeze(-1)
+            attention_logits = attention_logits.masked_fill(~mask, -1e9)
+            attention = cast(torch.Tensor, torch.softmax(attention_logits, dim=1))
+            attention = attention * mask.to(dtype=attention.dtype)
+            attention = attention / attention.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        else:
+            attention = cast(torch.Tensor, torch.softmax(attention_logits, dim=1))
 
         attended = cast(torch.Tensor, torch.sum(attention * review_features, dim=1))
         return attended
@@ -221,6 +276,19 @@ class NARRE(AbstractRec):
         user_review_item_ids: torch.Tensor,
         item_review_user_ids: torch.Tensor,
     ) -> torch.Tensor:
+        user_vocab_size = self.user_word_embedding.num_embeddings
+        item_vocab_size = self.item_word_embedding.num_embeddings
+        assert int(user_review.max()) < user_vocab_size, (
+            "user_review token max ({}) >= user vocab size ({})".format(
+                int(user_review.max()), user_vocab_size
+            )
+        )
+        assert int(item_review.max()) < item_vocab_size, (
+            "item_review token max ({}) >= item vocab size ({})".format(
+                int(item_review.max()), item_vocab_size
+            )
+        )
+
         user_review_features = self._encode_reviews(
             user_review,
             self.user_conv,
@@ -310,8 +378,26 @@ class NARRE(AbstractRec):
             item_review_user_ids=item_review_user_ids,
         )
         mse_loss = self.loss_fn(predictions, ratings.view(-1, 1).float())
-        loss_value = float(mse_loss.detach().item())
-        return mse_loss, {"mse_loss": loss_value, "total_loss": loss_value}
+
+        attention_l2_loss = torch.tensor(0.0, device=mse_loss.device)
+        if self.l2_reg_lambda > 0:
+            attention_l2_loss = (
+                torch.sum(self.user_review_fc.weight ** 2)
+                + torch.sum(self.user_id_attention_fc.weight ** 2)
+                + torch.sum(self.item_review_fc.weight ** 2)
+                + torch.sum(self.item_id_attention_fc.weight ** 2)
+            )
+
+        total_loss = mse_loss + self.l2_reg_lambda * attention_l2_loss
+
+        loss_value = float(total_loss.detach().item())
+        mse_value = float(mse_loss.detach().item())
+        l2_value = float(attention_l2_loss.detach().item())
+        return total_loss, {
+            "mse_loss": mse_value,
+            "attention_l2_loss": l2_value,
+            "total_loss": loss_value,
+        }
 
     def predict_scores(
         self,

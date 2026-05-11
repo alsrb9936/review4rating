@@ -52,7 +52,13 @@ class NARREDataset(RecDataset):
     user_review_item_ids: torch.Tensor | None
     item_review_user_ids: torch.Tensor | None
 
-    def __init__(self, df: pd.DataFrame, configs: Mapping[str, object], split: str = "train") -> None:
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        configs: Mapping[str, object],
+        split: str = "train",
+        train_dataset: NARREDataset | None = None,
+    ) -> None:
         super().__init__(df, configs, split)
         self.review_length = self._coerce_int(configs.get("review_length", 40), 40)
         self.review_count = self._coerce_int(configs.get("review_count", 10), 10)
@@ -73,19 +79,27 @@ class NARREDataset(RecDataset):
         self.item_ids = torch.tensor(df["item_id"].tolist(), dtype=torch.long)
         self.ratings = torch.tensor(df["rating"].tolist(), dtype=torch.float32)
 
-        vocab_tokens = self._collect_vocab_tokens(df)
-        self.pad_idx = 0
-        self.word_to_idx = self._build_word_to_idx(vocab_tokens)
+        # Vocab & embedding: train builds, valid/test share from train
+        if train_dataset is not None:
+            self.pad_idx = train_dataset.pad_idx
+            self.word_to_idx = train_dataset.word_to_idx
+            self.user_embedding_matrix = train_dataset.user_embedding_matrix.clone()
+            self.item_embedding_matrix = train_dataset.item_embedding_matrix.clone()
+            self.embedding_matrix = self.user_embedding_matrix
+        else:
+            vocab_tokens = self._collect_vocab_tokens(df)
+            self.pad_idx = 0
+            self.word_to_idx = self._build_word_to_idx(vocab_tokens)
 
-        embedding_matrix = self._load_glove(
-            self.glove_path,
-            self.word_dim,
-            vocab_tokens,
-            self.word_to_idx,
-        )
-        self.user_embedding_matrix = embedding_matrix.clone()
-        self.item_embedding_matrix = embedding_matrix.clone()
-        self.embedding_matrix = self.user_embedding_matrix
+            embedding_matrix = self._load_glove(
+                self.glove_path,
+                self.word_dim,
+                vocab_tokens,
+                self.word_to_idx,
+            )
+            self.user_embedding_matrix = embedding_matrix.clone()
+            self.item_embedding_matrix = embedding_matrix.clone()
+            self.embedding_matrix = self.user_embedding_matrix
 
         self.interactions = []
         for row in df.itertuples(index=False):
@@ -118,6 +132,9 @@ class NARREDataset(RecDataset):
                 self.review_lookup_by_user,
                 self.review_lookup_by_item,
             )
+        else:
+            # valid/test: build context using TRAIN review lookups + shared vocab
+            self._setup_evaluation_from_train(train_dataset)
 
     @classmethod
     def _load_glove(
@@ -159,8 +176,8 @@ class NARREDataset(RecDataset):
 
     @staticmethod
     def _build_word_to_idx(vocab_tokens: set[str]) -> dict[str, int]:
-        word_to_idx = {"<pad>": 0}
-        for idx, token in enumerate(sorted(vocab_tokens), start=1):
+        word_to_idx = {"<pad>": 0, "<unk>": 1}
+        for idx, token in enumerate(sorted(vocab_tokens), start=2):
             word_to_idx[token] = idx
         return word_to_idx
 
@@ -195,7 +212,8 @@ class NARREDataset(RecDataset):
         return re.findall(r"[a-z0-9']+", text)
 
     def _tokens_to_ids(self, text: str) -> list[int]:
-        return [self.word_to_idx.get(token, self.pad_idx) for token in self._tokenize(text)]
+        unk_idx = self.word_to_idx.get("<unk>", 1)
+        return [self.word_to_idx.get(token, unk_idx) for token in self._tokenize(text)]
 
     @staticmethod
     def _build_review_lookups(interactions: list[Interaction], use_user_key: bool) -> ReviewLookup:
@@ -279,24 +297,10 @@ class NARREDataset(RecDataset):
             torch.stack(item_review_user_ids),
         )
 
-    def _setup_evaluation(self, train_df: pd.DataFrame, valid_df: pd.DataFrame, test_df: pd.DataFrame) -> None:
-        if self.split not in {"valid", "test"}:
+    def _setup_evaluation_from_train(self, train_dataset: NARREDataset | None) -> None:
+        if self.split not in {"valid", "test"} or train_dataset is None:
             return
 
-        history_interactions: list[Interaction] = []
-        for row in train_df.itertuples(index=False):
-            review_text = self._normalize_text(getattr(row, "reviewText", ""))
-            history_interactions.append(
-                (
-                    int(getattr(row, "user_id")),
-                    int(getattr(row, "item_id")),
-                    self._tokens_to_ids(review_text),
-                    review_text,
-                )
-            )
-
-        review_lookup_by_user = self._build_review_lookups(history_interactions, use_user_key=True)
-        review_lookup_by_item = self._build_review_lookups(history_interactions, use_user_key=False)
         (
             self.user_review_tensors,
             self.item_review_tensors,
@@ -304,8 +308,8 @@ class NARREDataset(RecDataset):
             self.item_review_user_ids,
         ) = self._build_context_tensors(
             self.interactions,
-            review_lookup_by_user,
-            review_lookup_by_item,
+            train_dataset.review_lookup_by_user,
+            train_dataset.review_lookup_by_item,
         )
 
     def __len__(self) -> int:

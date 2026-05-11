@@ -238,8 +238,12 @@ def get_dataloader(train_df, valid_df, test_df, configs):
     ) + 1
 
     train_dataset = dataset_cls(train_df, configs, split="train")
-    valid_dataset = dataset_cls(valid_df, configs, split="valid")
-    test_dataset = dataset_cls(test_df, configs, split="test")
+    if model_name == "narre":
+        valid_dataset = dataset_cls(valid_df, configs, split="valid", train_dataset=train_dataset)
+        test_dataset = dataset_cls(test_df, configs, split="test", train_dataset=train_dataset)
+    else:
+        valid_dataset = dataset_cls(valid_df, configs, split="valid")
+        test_dataset = dataset_cls(test_df, configs, split="test")
 
     if hasattr(valid_dataset, "_setup_evaluation"):
         valid_dataset._setup_evaluation(train_df, valid_df, test_df)
