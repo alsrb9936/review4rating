@@ -1,0 +1,51 @@
+basemodel: "sgdn"
+
+model:
+  name: "sgdn"
+
+  embedding_size: 64
+  hidden_dim: 64
+
+  num_layers: 1
+  dropout: 0.8
+  gcn_dropout: 0.8
+  factor_dropout: 0.0
+  pred_dropout: 0.0
+
+  review_dim: 64
+  use_review: true
+  symm: true
+
+  num_factors: 2
+
+  use_contrastive: false
+  cl_weight: 0.0
+  temperature: 0.2
+  num_pos: 10
+  num_neg: 2048
+  use_review_prototypes: true
+  init_review_prototypes: true
+  debug_shapes: false
+
+  disentangle_weight: 0.0
+
+  classification: false
+  init_pred_bias_with_rating_mean: true
+
+training:
+  batch: 1
+  eval_batch: 1
+  epoch: 2000
+  lr: 0.01
+  weight_decay: 0.0
+  early_stop_patience: 100
+  grad_clip: 1.0
+  eval_step: 1
+
+evaluation:
+  best_metric_name: "rmse"
+  metrics: ["rmse", "mse", "mae"]
+  eval_clip: false
+
+data:
+  use_cached_graphs: true

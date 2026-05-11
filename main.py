@@ -117,6 +117,7 @@ def args_parser():
     parser.add_argument("--sentiment", type=bool, default=False, help="Only evaluate the model")
     parser.add_argument("--review_emb_path", type=str, default=None, help="Path to precomputed review embeddings")
     parser.add_argument("--review_feature_backend", type=str, default=None, choices=["sentence_transformer", "bert_whitening", "cached"], help="Review feature backend")
+    parser.add_argument("--review_dim", type=int, default=None, help="Review embedding dimension")
     parser.add_argument("--bert_whitening_dim", type=int, default=None, help="Output dimension for BERT-Whitening review features")
     parser.add_argument("--review_input_mode", type=str, default=None, choices=["token", "embedding"], help="SSG review input mode")
     parser.add_argument("--ssg_preset", type=str, default=None, choices=["custom", "set_only", "set_sequence", "set_graph", "full", "no_decov"], help="SSG ablation preset")
@@ -298,6 +299,8 @@ def eval_mode(args):
         configs['review_emb_path'] = args.review_emb_path
     if args.review_feature_backend is not None:
         configs['review_feature_backend'] = args.review_feature_backend
+    if args.review_dim is not None:
+        configs['review_dim'] = args.review_dim
     if args.bert_whitening_dim is not None:
         configs['bert_whitening_dim'] = args.bert_whitening_dim
         configs['review_dim'] = args.bert_whitening_dim
@@ -378,6 +381,7 @@ def main():
         'seed': args.seed,
         'review_emb_path': args.review_emb_path,
         'review_feature_backend': args.review_feature_backend,
+        'review_dim': args.review_dim,
         'bert_whitening_dim': args.bert_whitening_dim,
         'review_input_mode': args.review_input_mode,
         'ssg_preset': args.ssg_preset,
@@ -390,8 +394,11 @@ def main():
     configs.merge({k: v for k, v in cli_overrides.items() if v is not None})
     
     configs['dataset'] = args.dataset
-    configs['basemodel'] = args.model
+    if not configs.get('basemodel'):
+        configs['basemodel'] = args.model
     configs['sentiment'] = args.sentiment
+    if args.review_dim is not None:
+        configs['review_dim'] = args.review_dim
     if args.bert_whitening_dim is not None:
         configs['review_dim'] = args.bert_whitening_dim
     apply_iard_loss_preset(configs)

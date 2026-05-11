@@ -11,6 +11,9 @@ model:
   # Graph convolution settings
   num_layers: 1
   dropout: 0.8
+  gcn_dropout: 0.8
+  factor_dropout: 0.0
+  pred_dropout: 0.0
   
   # Review feature settings
   # sentence_transformer default is 384; CLI --bert_whitening_dim also sets review_dim.
@@ -36,6 +39,7 @@ model:
   
   # Prediction mode
   classification: false
+  init_pred_bias_with_rating_mean: true
 
 training:
   batch: 1

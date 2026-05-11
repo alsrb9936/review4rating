@@ -18,7 +18,7 @@ class FactorDistributionEncoder(nn.Module):
         review_dim: int,
         embedding_size: int,
         num_factors: int,
-        dropout: float,
+        factor_dropout: float,
         use_review_prototypes: bool,
     ):
         super().__init__()
@@ -28,13 +28,13 @@ class FactorDistributionEncoder(nn.Module):
         self.semantic_mlp = nn.Sequential(
             nn.Linear(review_dim, embedding_size),
             nn.GELU(),
-            nn.Dropout(dropout),
+            nn.Dropout(factor_dropout),
             nn.Linear(embedding_size, num_factors),
         )
         self.structural_mlp = nn.Sequential(
             nn.Linear(embedding_size * 2, embedding_size),
             nn.GELU(),
-            nn.Dropout(dropout),
+            nn.Dropout(factor_dropout),
             nn.Linear(embedding_size, num_factors),
         )
         self.gate = nn.Sequential(
@@ -147,8 +147,8 @@ class FactorizedMessagePassing(nn.Module):
                     review_factor_logits = self.review_proj(review_feat)
                     edge_factor_weight = torch.softmax(review_factor_logits[:, k], dim=0).unsqueeze(1)
 
-                src_feat_u = item_emb[edge_items] @ i_transform
-                src_feat_i = user_emb[edge_users] @ u_transform
+                src_feat_u = self.dropout(item_emb[edge_items] @ i_transform)
+                src_feat_i = self.dropout(user_emb[edge_users] @ u_transform)
 
                 msg_u = (src_feat_u * edge_factor_weight) * norm_factors["item"]["cj"][edge_items]
                 msg_i = (src_feat_i * edge_factor_weight) * norm_factors["user"]["cj"][edge_users]
@@ -268,6 +268,10 @@ class SGDN(AbstractRec):
         self.num_factors = int(configs.get("num_factors", 4))
         self.num_layers = int(configs.get("num_layers", 1))
         self.dropout = float(configs.get("dropout", 0.3))
+        self.gcn_dropout = float(configs.get("gcn_dropout", self.dropout))
+        self.factor_dropout = float(configs.get("factor_dropout", self.dropout))
+        self.pred_dropout = float(configs.get("pred_dropout", self.dropout))
+        self.init_pred_bias_with_rating_mean = bool(configs.get("init_pred_bias_with_rating_mean", False))
         self.use_contrastive = bool(configs.get("use_contrastive", True))
         self.cl_weight = float(configs.get("cl_weight", 0.1))
         self.disentangle_weight = float(configs.get("disentangle_weight", 0.01))
@@ -289,7 +293,7 @@ class SGDN(AbstractRec):
             review_dim=self.review_dim,
             embedding_size=self.embedding_size,
             num_factors=self.num_factors,
-            dropout=self.dropout,
+            factor_dropout=self.factor_dropout,
             use_review_prototypes=self.use_review_prototypes,
         )
 
@@ -297,12 +301,12 @@ class SGDN(AbstractRec):
         self.mp_layers = nn.ModuleList(
             [
                 FactorizedMessagePassing(
-                num_factors=self.num_factors,
+                    num_factors=self.num_factors,
                     in_feats=layer_dims[layer_idx],
                     out_feats=layer_dims[layer_idx + 1],
-                review_dim=self.review_dim,
-                dropout=self.dropout,
-            )
+                    review_dim=self.review_dim,
+                    dropout=self.gcn_dropout,
+                )
                 for layer_idx in range(self.num_layers)
             ]
         )
@@ -310,7 +314,7 @@ class SGDN(AbstractRec):
         self.rating_predictor = nn.Sequential(
             nn.Linear(self.hidden_dim * 2, self.hidden_dim),
             nn.GELU(),
-            nn.Dropout(self.dropout),
+            nn.Dropout(self.pred_dropout),
             nn.Linear(self.hidden_dim, len(self.rating_vals) if self.classification else 1),
         )
 
@@ -327,6 +331,8 @@ class SGDN(AbstractRec):
         self._init_embeddings()
         if self.use_review_prototypes and self.init_review_prototypes:
             self._init_review_prototypes(train_dataset)
+        if self.init_pred_bias_with_rating_mean:
+            self._init_pred_bias_with_train_mean(train_dataset)
 
     def _init_embeddings(self):
         nn.init.xavier_uniform_(self.user_embedding.weight)
@@ -353,6 +359,20 @@ class SGDN(AbstractRec):
         except Exception as exc:
             # Optional author-code alignment path; random prototypes remain valid.
             print(f"SGDN review prototype KMeans init skipped: {exc}")
+
+    def _init_pred_bias_with_train_mean(self, train_dataset) -> None:
+        if self.classification:
+            return
+        ratings = getattr(train_dataset, "ratings", None)
+        if not isinstance(ratings, torch.Tensor) or ratings.numel() == 0:
+            return
+        final_layer = self.rating_predictor[-1]
+        if not isinstance(final_layer, nn.Linear) or final_layer.bias is None:
+            return
+        rating_mean = float(ratings.float().mean().item())
+        with torch.no_grad():
+            final_layer.bias.fill_(rating_mean)
+        print(f"SGDN initialized regression predictor bias with train rating mean: {rating_mean:.4f}")
 
     def _to_device(self, value, device):
         if isinstance(value, torch.Tensor):
@@ -488,11 +508,22 @@ class SGDN(AbstractRec):
             + self.disentangle_weight * disentangle_loss
         )
 
+        if self.classification:
+            probs = F.softmax(pred_ratings1, dim=1)
+            rating_vals = pred_ratings1.new_tensor(self.rating_vals, dtype=torch.float32)
+            pred_for_diag = (probs * rating_vals.view(1, -1)).sum(dim=1)
+        else:
+            pred_for_diag = pred_ratings1.squeeze(-1)
+
         loss_dict = {
             "total_loss": float(total_loss.detach().item()),
             "rating_loss": float(rating_loss.detach().item()),
             "cl_loss": float(cl_loss.detach().item()),
             "disentangle_loss": float(disentangle_loss.detach().item()),
+            "pred_min": float(pred_for_diag.detach().min().item()),
+            "pred_max": float(pred_for_diag.detach().max().item()),
+            "pred_mean": float(pred_for_diag.detach().mean().item()),
+            "pred_std": float(pred_for_diag.detach().std(unbiased=False).item()),
         }
         return total_loss, loss_dict
 

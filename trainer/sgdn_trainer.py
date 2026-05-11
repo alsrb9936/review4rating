@@ -69,15 +69,22 @@ class SGDNTrainer(BaseTrainer):
         ratings = np.concatenate(all_ratings)
 
         metrics = self._build_eval_metrics(predictions, ratings, phase=phase)
+        clipped = np.clip(predictions, self.min_rating, self.max_rating)
+        clipped_errors = clipped - ratings
+        metrics.update({
+            "mse_clipped": float(np.mean(np.square(clipped_errors))),
+            "rmse_clipped": float(np.sqrt(np.mean(np.square(clipped_errors)))),
+            "mae_clipped": float(np.mean(np.abs(clipped_errors))),
+            "raw_pred_min": float(np.min(predictions)),
+            "raw_pred_max": float(np.max(predictions)),
+            "raw_pred_mean": float(np.mean(predictions)),
+            "raw_pred_std": float(np.std(predictions)),
+        })
 
         if phase == "test":
             raw = predictions
-            if self.eval_clip:
-                clipped = np.clip(raw, self.min_rating, self.max_rating)
-            else:
-                clipped = raw
             print(f"[SGDN Test] raw_pred: min={raw.min():.4f}, max={raw.max():.4f}, mean={raw.mean():.4f}")
-            print(f"[SGDN Test] eval_clip={self.eval_clip}, final_pred: min={clipped.min():.4f}, max={clipped.max():.4f}, mean={clipped.mean():.4f}")
+            print(f"[SGDN Test] eval_clip={self.eval_clip}, clipped_pred: min={clipped.min():.4f}, max={clipped.max():.4f}, mean={clipped.mean():.4f}")
 
         return metrics
 
