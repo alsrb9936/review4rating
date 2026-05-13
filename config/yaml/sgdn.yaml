@@ -12,8 +12,10 @@ model:
   # Embedding dimensions / original SGDN aliases
   # original: review_feat_size=64, gcn_agg_units=review_feat_size, gcn_out_units=review_feat_size
   embedding_size: 64        # legacy project key; DGL SGDN does not use a separate MF embedding.
-  review_dim: 384
-  review_feat_size: 384     # original SGDN alias for review_dim
+  # review_dim: 384
+  review_dim: 64
+  # review_feat_size: 384     # original SGDN alias for review_dim
+  review_feat_size : 64
   hidden_dim: 64            # project canonical final user/item embedding dim
   gcn_agg_units: 64         # original SGDN message units before factor split
   gcn_out_units: 64         # original SGDN output units; kept equal to hidden_dim/review_dim
@@ -92,4 +94,4 @@ data:
   compute_review_embedding: true
   use_sentiment: false
   review_feature_backend: "sentence_transformer"
-  use_bert_whitening: false
+  use_bert_whitening: True

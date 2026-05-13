@@ -1,0 +1,196 @@
+training:
+  batch: 1
+  training:
+    batch: 1
+    eval_batch: 1
+    epoch: 2000
+    lr: 0.01
+    weight_decay: 0.0
+    batch_size: 2048
+    train_max_iter: 2000
+    train_lr: 0.01
+    train_min_lr: 0.001
+    train_lr_decay_factor: 0.5
+    train_decay_patience: 50
+    train_early_stopping_patience: 100
+    grad_clip: 1.0
+    train_grad_clip: 1.0
+    train_log_interval: 1
+    train_valid_interval: 1
+    train_optimizer: Adam
+  eval_batch: 1
+  epoch: 2000
+  lr: 0.01
+  weight_decay: 0.0
+  batch_size: 2048
+  train_max_iter: 2000
+  train_lr: 0.01
+  train_min_lr: 0.001
+  train_lr_decay_factor: 0.5
+  train_decay_patience: 50
+  early_stop_patience: 100
+  evaluation:
+    early_stop_patience: 100
+    eval_step: 1
+  train_early_stopping_patience: 100
+  grad_clip: 1.0
+  train_grad_clip: 1.0
+  eval_step: 1
+  train_log_interval: 1
+  train_valid_interval: 1
+  train_optimizer: Adam
+evaluation:
+  eval_step: 1
+  evaluation:
+    eval_step: 1
+    early_stop_patience: 10
+    best_metric_name: rmse
+    eval_clip: false
+    drop_cold_start_eval: true
+    min_rating: 1.0
+    max_rating: 5.0
+    metrics: &id001
+    - rmse
+    - mse
+    - mae
+  early_stop_patience: 10
+  best_metric_name: rmse
+  eval_clip: false
+  drop_cold_start_eval: true
+  min_rating: 1.0
+  max_rating: 5.0
+  metrics: *id001
+model:
+  embedding_size: 64
+  model:
+    embedding_size: 64
+    dropout_prob: 0.1
+    name: sgdn
+    review_dim: 64
+    num_layers: 1
+    dropout: 0.8
+    gcn_dropout: 0.8
+    factor_dropout: 0.0
+    pred_dropout: 0.0
+    use_review: true
+    symm: true
+    use_contrastive: true
+    classification: false
+    init_pred_bias_with_rating_mean: true
+  dropout_prob: 0.1
+  name: sgdn
+  review_dim: 64
+  review_feat_size: 64
+  hidden_dim: 64
+  gcn_agg_units: 64
+  gcn_out_units: 64
+  num_layers: 1
+  num_layer: 1
+  gcn_agg_norm_symm: true
+  gcn_agg_accum: sum
+  dropout: 0.8
+  gcn_dropout: 0.8
+  factor_dropout: 0.0
+  pred_dropout: 0.0
+  use_review: true
+  symm: true
+  num_factors: 4
+  num_factor: 4
+  use_contrastive: true
+  cl_weight: 0.005
+  lamda: 0.005
+  temperature: 0.2
+  edge_temperature: 0.5
+  num_pos: 10
+  num_neg: 2048
+  use_review_prototypes: true
+  init_review_prototypes: true
+  debug_shapes: false
+  disentangle_weight: 0.0
+  classification: false
+  train_classification: false
+  init_pred_bias_with_rating_mean: true
+data:
+  data_path: /home/infolab/mnt/mingyu/review_rec/dataset
+  data:
+    data_path: /home/infolab/mnt/mingyu/review_rec/dataset
+    other_path: /home/infolab/mnt/mingyu/review_rec/cached/others
+    embedding_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding
+    sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
+    sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
+    language_model: sentence-transformers/all-MiniLM-L12-v2
+    use_review_text: false
+    use_review_embedding: true
+    compute_review_embedding: true
+    use_sentiment: false
+    review_feature_backend: sentence_transformer
+    review_emb_path: null
+    use_bert_whitening: true
+    bert_whitening_model: bert-base-uncased
+    bert_whitening_dim: 64
+    bert_whitening_pooling: cls
+    bert_whitening_normalize: true
+    bert_whitening_cache_scope: full
+    bert_whitening_stats_path: null
+  other_path: /home/infolab/mnt/mingyu/review_rec/cached/others
+  embedding_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding
+  sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
+  sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
+  language_model: sentence-transformers/all-MiniLM-L12-v2
+  use_review_text: false
+  use_review_embedding: true
+  compute_review_embedding: true
+  use_sentiment: false
+  review_feature_backend: sentence_transformer
+  review_emb_path: null
+  use_bert_whitening: true
+  bert_whitening_model: bert-base-uncased
+  bert_whitening_dim: 64
+  bert_whitening_pooling: cls
+  bert_whitening_normalize: true
+  bert_whitening_cache_scope: full
+  bert_whitening_stats_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding/Amazon_Musical_Instruments_14/bert-base-uncased_stats.pt
+  use_cached_graphs: true
+review_feat_size: 64
+hidden_dim: 64
+gcn_agg_units: 64
+gcn_out_units: 64
+num_layer: 1
+gcn_agg_norm_symm: true
+gcn_agg_accum: sum
+num_factors: 4
+num_factor: 4
+cl_weight: 0.005
+lamda: 0.005
+temperature: 0.2
+edge_temperature: 0.5
+num_pos: 10
+num_neg: 2048
+use_review_prototypes: true
+init_review_prototypes: true
+debug_shapes: false
+disentangle_weight: 0.0
+train_classification: false
+use_cached_graphs: true
+gpu: 3
+seed: 42
+dataset: Amazon_Musical_Instruments_14
+basemodel: sgdn
+result_path: results/sgdn_42_Amazon_Musical_Instruments_14_20260514_080409_982732
+cold_start_eval_summary:
+  valid:
+    num_samples_before: 1026
+    cold_user_count: 0
+    cold_item_count: 0
+    cold_interaction_count: 0
+    removed_count: 0
+    num_samples_after: 1026
+  test:
+    num_samples_before: 1027
+    cold_user_count: 0
+    cold_item_count: 0
+    cold_interaction_count: 0
+    removed_count: 0
+    num_samples_after: 1027
+num_users: 1429
+num_items: 900

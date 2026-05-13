@@ -68,9 +68,9 @@ class DAML(AbstractRec):
             padding_idx=self.pad_idx,
         )
 
-        # Local attention word CNN (shared, 1x1 conv over word_dim)
-        # Original: kernel=(5, word_dim), padding=(2, 0)
-        self.word_cnn = nn.Conv2d(1, 1, (5, self.word_dim), padding=(2, 0))
+        # Local attention word CNN (shared, kernel_size x word_dim conv)
+        word_cnn_padding = (self.kernel_size // 2, 0)
+        self.word_cnn = nn.Conv2d(1, 1, (self.kernel_size, self.word_dim), padding=word_cnn_padding)
 
         # Document-level CNN (extract local features from weighted embeddings)
         # Original: Conv2d(1, filters_num, (kernel_size, word_dim), padding=(1, 0))
@@ -110,8 +110,19 @@ class DAML(AbstractRec):
 
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        vocab_size = embedding_weight.size(0)
+        lr = float(self.configs.get("lr", 0.001))
+        batch = int(self.configs.get("batch", 256))
+        eval_batch = int(self.configs.get("eval_batch", 256))
+        lr_decay = float(self.configs.get("lr_decay", self.configs.get("gamma", 1.0)))
+        weight_decay = float(self.configs.get("weight_decay", 0.0))
         print(
-            f"DAML parameters: total={total_params}, trainable={trainable_params}"
+            f"[DAML config] doc_len={self.doc_len}, word_dim={self.word_dim}, "
+            f"filters_num={self.filters_num}, id_emb_size={self.id_emb_size}, "
+            f"dropout_prob={self.dropout_prob}, lr={lr}, lr_decay={lr_decay}, "
+            f"weight_decay={weight_decay}, l2_reg_lambda={self.l2_reg_lambda}, "
+            f"batch={batch}, eval_batch={eval_batch}, vocab_size={vocab_size}, "
+            f"total_params={total_params}, trainable_params={trainable_params}"
         )
 
     def _get_int_config(self, key: str, default: int) -> int:

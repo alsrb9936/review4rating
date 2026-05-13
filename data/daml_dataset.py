@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 from collections.abc import Mapping
 from typing import Dict, List, Optional, Tuple
@@ -25,6 +27,11 @@ class DAMLDataset(RecDataset):
 
     Unlike NARRE which uses review-level features, DAML concatenates all
     reviews into a single document per user/item with a ``<sep>`` token.
+
+    Word embeddings are cached to disk under
+    ``{embedding_path}/{dataset}/daml_word_embeddings_{word_dim}.pt``
+    so that subsequent training runs do not re-read the multi-gigabyte
+    GloVe file.
     """
 
     _glove_cache: Dict[str, Tuple[Dict[str, int], torch.Tensor, int]] = {}
@@ -45,6 +52,8 @@ class DAMLDataset(RecDataset):
                 "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt",
             )
         )
+        self.embedding_path = str(configs.get("embedding_path", "/home/infolab/mnt/mingyu/review_rec/cached/embedding"))
+        self.dataset_name = str(configs.get("dataset", "unknown"))
         self.retain_rui = bool(configs.get("retain_rui", False))
 
         self.user_ids = torch.as_tensor(df["user_id"].to_numpy(dtype=np.int64), dtype=torch.long)
@@ -69,11 +78,30 @@ class DAMLDataset(RecDataset):
             self.embedding_matrix = train_dataset.embedding_matrix.clone()
         else:
             vocab_tokens = self._build_vocab_from_reviews(df)
-            vocab, embedding_matrix, self.pad_idx = self._load_glove_for_vocab(
-                self.glove_path, self.word_dim, vocab_tokens
-            )
-            self.word_to_idx = vocab
-            self.embedding_matrix = embedding_matrix
+            cache_path = self._word_embedding_cache_path()
+            if cache_path and os.path.exists(cache_path):
+                print(f"[DAML] Loading cached word embeddings from {cache_path}")
+                cached = torch.load(cache_path, map_location="cpu", weights_only=False)
+                self.word_to_idx = cached["word_to_idx"]
+                self.embedding_matrix = cached["embedding_matrix"]
+                self.pad_idx = int(cached.get("pad_idx", 0))
+            else:
+                vocab, embedding_matrix, self.pad_idx = self._load_glove_for_vocab(
+                    self.glove_path, self.word_dim, vocab_tokens
+                )
+                self.word_to_idx = vocab
+                self.embedding_matrix = embedding_matrix
+                if cache_path:
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    torch.save(
+                        {
+                            "word_to_idx": self.word_to_idx,
+                            "embedding_matrix": self.embedding_matrix,
+                            "pad_idx": self.pad_idx,
+                        },
+                        cache_path,
+                    )
+                    print(f"[DAML] Saved word embeddings to {cache_path}")
 
         # Build review lookups
         self.review_lookup_by_user = self._build_review_lookups(self.interactions, use_user_key=True)
@@ -97,6 +125,13 @@ class DAMLDataset(RecDataset):
                 train_dataset.review_lookup_by_item,
             )
             self._print_preprocess_summary(split)
+
+    def _word_embedding_cache_path(self) -> str | None:
+        glove_name = os.path.basename(self.glove_path).replace(".txt", "").replace(".bin", "")
+        return (
+            f"{self.embedding_path}/{self.dataset_name}/"
+            f"daml_word_embeddings_{glove_name}_{self.word_dim}.pt"
+        )
 
     @classmethod
     def _build_vocab_from_reviews(cls, df: pd.DataFrame) -> set[str]:
@@ -288,10 +323,11 @@ class DAMLDataset(RecDataset):
         if self.user_doc_tensors is None or self.item_doc_tensors is None:
             raise RuntimeError("Document tensors must be initialized before accessing DAML samples.")
 
-        return {
+        sample: dict[str, torch.Tensor] = {
             "user_id": self.user_ids[idx].clone().detach(),
             "item_id": self.item_ids[idx].clone().detach(),
             "rating": self.ratings[idx].clone().detach(),
             "user_doc": self.user_doc_tensors[idx].clone().detach(),
             "item_doc": self.item_doc_tensors[idx].clone().detach(),
         }
+        return sample
