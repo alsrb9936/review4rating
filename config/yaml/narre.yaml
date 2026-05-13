@@ -15,16 +15,18 @@ model:
   attention_size: 32
   dropout_prob: 0.5
   freeze_word_embedding: false
-  l2_reg_lambda: 0.0
-  mask_padding_attention: true
+  l2_reg_lambda: 0.001
+  mask_padding_attention: false
   word_embedding_cpu: false
   retain_rui: true
 training:
-  batch: 32
-  epoch: 200
+  batch: 100
+  epoch: 40
   lr: 0.002
-  lr_decay: 0.95
+  lr_decay: 1.0
   weight_decay: 0.0
 evaluation:
+  early_stop_patience: 40
+  eval_clip: false
   min_rating: 1.0
   max_rating: 5.0

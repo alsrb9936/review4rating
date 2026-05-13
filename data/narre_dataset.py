@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-# pyright: reportImplicitOverride=false, reportMissingTypeStubs=false, reportExplicitAny=false, reportAny=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportArgumentType=false
-
 import re
 from collections.abc import Mapping
 
@@ -12,8 +10,8 @@ import torch
 from .abstract_dataset import RecDataset
 
 
-Interaction = tuple[int, int, list[int], str]
-ReviewEntry = tuple[int, list[int], str]
+Interaction = tuple[int, int, list[int], list[int]]
+ReviewEntry = tuple[int, list[int]]
 ReviewLookup = dict[int, list[ReviewEntry]]
 
 
@@ -22,7 +20,7 @@ class NARREDataset(RecDataset):
 
     Two modes are supported via ``retain_rui``:
     - ``True``: Reproduction mode. The target user-item review is kept inside
-      the user/item context, matching the original paper setup.
+      the user/item context, matching the original GitHub implementation.
     - ``False``: Fair evaluation mode. The target review is excluded from the
       context so the model only observes historical reviews.
     """
@@ -41,6 +39,8 @@ class NARREDataset(RecDataset):
     ratings: torch.Tensor
     pad_idx: int
     word_to_idx: dict[str, int]
+    user_word_to_idx: dict[str, int]
+    item_word_to_idx: dict[str, int]
     user_embedding_matrix: torch.Tensor
     item_embedding_matrix: torch.Tensor
     embedding_matrix: torch.Tensor
@@ -66,14 +66,14 @@ class NARREDataset(RecDataset):
         self.glove_path = self._coerce_str(
             configs.get(
             "glove_path",
-            "/home/infolab/mnt/mingyu/review_rec/rating4review/cached/others/glove.6B.50d.txt",
+            "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt",
             ),
-            "/home/infolab/mnt/mingyu/review_rec/rating4review/cached/others/glove.6B.50d.txt",
+            "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt",
         )
-        self.retain_rui = self._coerce_bool(configs.get("retain_rui", False), False)
+        self.retain_rui = self._coerce_bool(configs.get("retain_rui", True), True)
 
-        self.user_review_padding_id = self.num_users
-        self.item_review_padding_id = self.num_items
+        self.user_review_padding_id = self.num_users + 1
+        self.item_review_padding_id = self.num_items + 1
 
         self.user_ids = torch.tensor(df["user_id"].tolist(), dtype=torch.long)
         self.item_ids = torch.tensor(df["item_id"].tolist(), dtype=torch.long)
@@ -83,22 +83,32 @@ class NARREDataset(RecDataset):
         if train_dataset is not None:
             self.pad_idx = train_dataset.pad_idx
             self.word_to_idx = train_dataset.word_to_idx
+            self.user_word_to_idx = train_dataset.user_word_to_idx
+            self.item_word_to_idx = train_dataset.item_word_to_idx
             self.user_embedding_matrix = train_dataset.user_embedding_matrix.clone()
             self.item_embedding_matrix = train_dataset.item_embedding_matrix.clone()
             self.embedding_matrix = self.user_embedding_matrix
         else:
-            vocab_tokens = self._collect_vocab_tokens(df)
+            user_vocab_tokens, item_vocab_tokens = self._collect_side_vocab_tokens(df)
             self.pad_idx = 0
-            self.word_to_idx = self._build_word_to_idx(vocab_tokens)
+            self.user_word_to_idx = self._build_word_to_idx(user_vocab_tokens)
+            self.item_word_to_idx = self._build_word_to_idx(item_vocab_tokens)
+            # Backward-compatible alias for callers that only need a vocabulary
+            # object; the model now reads side-specific vocabularies directly.
+            self.word_to_idx = self.user_word_to_idx
 
-            embedding_matrix = self._load_glove(
+            self.user_embedding_matrix = self._load_glove(
                 self.glove_path,
                 self.word_dim,
-                vocab_tokens,
-                self.word_to_idx,
+                user_vocab_tokens,
+                self.user_word_to_idx,
+            ).clone()
+            self.item_embedding_matrix = self._load_glove(
+                self.glove_path,
+                self.word_dim,
+                item_vocab_tokens,
+                self.item_word_to_idx,
             )
-            self.user_embedding_matrix = embedding_matrix.clone()
-            self.item_embedding_matrix = embedding_matrix.clone()
             self.embedding_matrix = self.user_embedding_matrix
 
         self.interactions = []
@@ -108,8 +118,8 @@ class NARREDataset(RecDataset):
                 (
                     int(getattr(row, "user_id")),
                     int(getattr(row, "item_id")),
-                    self._tokens_to_ids(review_text),
-                    review_text,
+                    self._tokens_to_ids(review_text, self.user_word_to_idx),
+                    self._tokens_to_ids(review_text, self.item_word_to_idx),
                 )
             )
 
@@ -133,7 +143,7 @@ class NARREDataset(RecDataset):
                 self.review_lookup_by_item,
             )
         else:
-            # valid/test: build context using TRAIN review lookups + shared vocab
+            # valid/test: build context using TRAIN review lookups + side-specific vocabularies
             self._setup_evaluation_from_train(train_dataset)
 
     @classmethod
@@ -148,8 +158,9 @@ class NARREDataset(RecDataset):
         if cache_key in cls._glove_cache:
             return cls._glove_cache[cache_key]
 
-        embedding_matrix = torch.randn(len(word_to_idx), word_dim, dtype=torch.float32) * 0.01
-        embedding_matrix[0] = 0.0
+        # Original TensorFlow NARRE initializes the word tables uniformly in
+        # [-1, 1], then overwrites words found in the external word2vec file.
+        embedding_matrix = torch.empty(len(word_to_idx), word_dim, dtype=torch.float32).uniform_(-1.0, 1.0)
 
         with open(glove_path, "r", encoding="utf-8") as glove_file:
             for line_idx, line in enumerate(glove_file):
@@ -174,10 +185,24 @@ class NARREDataset(RecDataset):
             vocab_tokens.update(cls._tokenize(review_text))
         return vocab_tokens
 
+    @classmethod
+    def _collect_side_vocab_tokens(cls, df: pd.DataFrame) -> tuple[set[str], set[str]]:
+        # The original TensorFlow preprocessing builds independent user-review
+        # and item-review vocabularies. A review text appears in both corpora,
+        # but each side still owns its own word-index mapping and embedding table.
+        vocab_tokens = cls._collect_vocab_tokens(df)
+        return set(vocab_tokens), set(vocab_tokens)
+
     @staticmethod
     def _build_word_to_idx(vocab_tokens: set[str]) -> dict[str, int]:
-        word_to_idx = {"<pad>": 0, "<unk>": 1}
-        for idx, token in enumerate(sorted(vocab_tokens), start=2):
+        # Original data_pro.py pads with the literal token "<PAD/>" and then
+        # builds an alphabetically sorted vocabulary from padded corpora. The
+        # token sorts before alphabetic words, so it remains index 0 here.
+        pad_token = "<PAD/>"
+        ordered_tokens = [pad_token]
+        ordered_tokens.extend(token for token in sorted(vocab_tokens) if token != pad_token)
+        word_to_idx = {}
+        for idx, token in enumerate(ordered_tokens):
             word_to_idx[token] = idx
         return word_to_idx
 
@@ -191,6 +216,8 @@ class NARREDataset(RecDataset):
     def _coerce_bool(value: object, default: bool) -> bool:
         if value is None:
             return default
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
         return bool(value)
 
     @staticmethod
@@ -205,23 +232,39 @@ class NARREDataset(RecDataset):
             return ""
         if isinstance(text, (float, np.floating)) and np.isnan(text):
             return ""
-        return str(text).strip().lower()
+        normalized = re.sub(r"[^A-Za-z]", " ", str(text))
+        normalized = re.sub(r"\'s", " \'s", normalized)
+        normalized = re.sub(r"\'ve", " \'ve", normalized)
+        normalized = re.sub(r"n\'t", " n\'t", normalized)
+        normalized = re.sub(r"\'re", " \'re", normalized)
+        normalized = re.sub(r"\'d", " \'d", normalized)
+        normalized = re.sub(r"\'ll", " \'ll", normalized)
+        normalized = re.sub(r",", " , ", normalized)
+        normalized = re.sub(r"!", " ! ", normalized)
+        normalized = re.sub(r"\(", " \\( ", normalized)
+        normalized = re.sub(r"\)", " \\) ", normalized)
+        normalized = re.sub(r"\?", " \\? ", normalized)
+        normalized = re.sub(r"\s{2,}", " ", normalized)
+        return normalized.strip().lower()
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
-        return re.findall(r"[a-z0-9']+", text)
+        if not text:
+            return []
+        return text.split(" ")
 
-    def _tokens_to_ids(self, text: str) -> list[int]:
-        unk_idx = self.word_to_idx.get("<unk>", 1)
-        return [self.word_to_idx.get(token, unk_idx) for token in self._tokenize(text)]
+    def _tokens_to_ids(self, text: str, word_to_idx: dict[str, int]) -> list[int]:
+        pad_idx = word_to_idx.get("<PAD/>", self.pad_idx)
+        return [word_to_idx.get(token, pad_idx) for token in self._tokenize(text)]
 
     @staticmethod
     def _build_review_lookups(interactions: list[Interaction], use_user_key: bool) -> ReviewLookup:
         review_lookup: ReviewLookup = {}
-        for user_id, item_id, review_tokens, review_text in interactions:
+        for user_id, item_id, user_review_tokens, item_review_tokens in interactions:
             query_id = user_id if use_user_key else item_id
             other_id = item_id if use_user_key else user_id
-            review_lookup.setdefault(query_id, []).append((other_id, review_tokens, review_text))
+            review_tokens = user_review_tokens if use_user_key else item_review_tokens
+            review_lookup.setdefault(query_id, []).append((other_id, review_tokens))
         return review_lookup
 
     def _adjust_review_tokens(self, reviews: list[list[int]]) -> list[list[int]]:
@@ -249,14 +292,14 @@ class NARREDataset(RecDataset):
 
     def _load_reviews(self, lookup: ReviewLookup, query_id: int, exclude_id: int) -> torch.Tensor:
         selected_entries = self._select_review_entries(lookup, query_id, exclude_id)
-        selected_reviews = [tokens for _, tokens, _ in selected_entries]
+        selected_reviews = [tokens for _, tokens in selected_entries]
         return torch.tensor(self._adjust_review_tokens(selected_reviews), dtype=torch.long)
 
     def _load_review_ids(
         self, lookup: ReviewLookup, query_id: int, exclude_id: int, padding_id: int
     ) -> torch.Tensor:
         selected_entries = self._select_review_entries(lookup, query_id, exclude_id)
-        selected_ids = [other_id for other_id, _, _ in selected_entries]
+        selected_ids = [other_id for other_id, _ in selected_entries]
         return torch.tensor(self._adjust_side_ids(selected_ids, padding_id), dtype=torch.long)
 
     def _build_context_tensors(

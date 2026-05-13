@@ -1,5 +1,3 @@
-# pyright: reportAny=false, reportDeprecated=false, reportImplicitOverride=false, reportIncompatibleMethodOverride=false, reportUnknownMemberType=false, reportUnnecessaryCast=false, reportUnnecessaryComparison=false, reportUnusedCallResult=false
-
 from collections.abc import Mapping
 from typing import Dict, Tuple, Union, cast, final
 
@@ -24,8 +22,8 @@ class NARRE(AbstractRec):
         self.attention_size = self._get_int_config("attention_size", 32)
         self.dropout_prob = self._get_float_config("dropout_prob", 0.5)
         self.l2_reg_lambda = self._get_float_config("l2_reg_lambda", 0.0)
-        self.freeze_word_embedding = bool(configs.get("freeze_word_embedding", False))
-        self.mask_padding_attention = bool(configs.get("mask_padding_attention", True))
+        self.freeze_word_embedding = self._get_bool_config("freeze_word_embedding", False)
+        self.mask_padding_attention = self._get_bool_config("mask_padding_attention", False)
 
         filter_sizes_raw = configs.get("filter_sizes")
         if filter_sizes_raw is not None:
@@ -65,15 +63,17 @@ class NARRE(AbstractRec):
                 )
             )
 
-        vocab_size = len(getattr(train_dataset, "word_to_idx"))
-        assert user_embedding_weight.size(0) == vocab_size, (
+        fallback_vocab = getattr(train_dataset, "word_to_idx")
+        user_vocab_size = len(getattr(train_dataset, "user_word_to_idx", fallback_vocab))
+        item_vocab_size = len(getattr(train_dataset, "item_word_to_idx", fallback_vocab))
+        assert user_embedding_weight.size(0) == user_vocab_size, (
             "User embedding rows ({}) != vocab size ({})".format(
-                user_embedding_weight.size(0), vocab_size
+                user_embedding_weight.size(0), user_vocab_size
             )
         )
-        assert item_embedding_weight.size(0) == vocab_size, (
+        assert item_embedding_weight.size(0) == item_vocab_size, (
             "Item embedding rows ({}) != vocab size ({})".format(
-                item_embedding_weight.size(0), vocab_size
+                item_embedding_weight.size(0), item_vocab_size
             )
         )
 
@@ -134,29 +134,24 @@ class NARRE(AbstractRec):
         self.user_id_embedding = nn.Embedding(self.num_users, self.id_dim)
         self.item_id_embedding = nn.Embedding(self.num_items, self.id_dim)
         self.user_review_item_id_embedding = nn.Embedding(
-            self.num_items + 1,
+            self.num_items + 2,
             self.id_dim,
-            padding_idx=self.num_items,
         )
         self.item_review_user_id_embedding = nn.Embedding(
-            self.num_users + 1,
+            self.num_users + 2,
             self.id_dim,
-            padding_idx=self.num_users,
         )
 
         self.user_bias = nn.Embedding(self.num_users, 1)
         self.item_bias = nn.Embedding(self.num_items, 1)
         self.predict_layer = nn.Linear(self.id_dim, 1)
 
-        ratings_tensor = torch.as_tensor(
-            getattr(train_dataset, "ratings"),
-            dtype=torch.float32,
-        )
-        self.global_bias = nn.Parameter(ratings_tensor.mean())
+        self.global_bias = nn.Parameter(torch.tensor(0.1, dtype=torch.float32))
 
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(self.dropout_prob)
-        self.loss_fn = nn.MSELoss()
+        self.last_user_attention: torch.Tensor | None = None
+        self.last_item_attention: torch.Tensor | None = None
 
         self.init_weights()
 
@@ -187,24 +182,29 @@ class NARRE(AbstractRec):
     def _get_float_config(self, key: str, default: float) -> float:
         return float(cast(Union[int, float, str], self.configs.get(key, default)))
 
+    def _get_bool_config(self, key: str, default: bool) -> bool:
+        value = self.configs.get(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
+
     def init_weights(self) -> None:
         for module in self.modules():
             if isinstance(module, nn.Conv1d):
-                nn.init.xavier_uniform_(module.weight)
+                nn.init.trunc_normal_(module.weight, mean=0.0, std=0.1)
                 if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+                    nn.init.constant_(module.bias, 0.1)
             elif isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                nn.init.uniform_(module.weight, -0.1, 0.1)
                 if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+                    nn.init.constant_(module.bias, 0.1)
             elif isinstance(module, nn.Embedding) and module not in {
                 self.user_word_embedding,
                 self.item_word_embedding,
             }:
-                nn.init.normal_(module.weight, mean=0.0, std=0.01)
-                if module.padding_idx is not None:
-                    with torch.no_grad():
-                        module.weight[module.padding_idx].fill_(0.0)
+                nn.init.uniform_(module.weight, -0.1, 0.1)
+        nn.init.constant_(self.user_bias.weight, 0.1)
+        nn.init.constant_(self.item_bias.weight, 0.1)
 
     def _encode_reviews(
         self,
@@ -249,9 +249,11 @@ class NARRE(AbstractRec):
         id_fc: nn.Linear,
         attention_fc: nn.Linear,
         review_mask: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         review_proj = cast(torch.Tensor, review_fc(review_features))
-        id_proj = cast(torch.Tensor, id_fc(review_id_features))
+        # TensorFlow original applies ReLU immediately after the id embedding
+        # lookup before the attention projection.
+        id_proj = cast(torch.Tensor, id_fc(self.relu(review_id_features)))
         attention_input = cast(torch.Tensor, self.relu(review_proj + id_proj))
         attention_logits = cast(torch.Tensor, attention_fc(attention_input))
 
@@ -265,7 +267,7 @@ class NARRE(AbstractRec):
             attention = cast(torch.Tensor, torch.softmax(attention_logits, dim=1))
 
         attended = cast(torch.Tensor, torch.sum(attention * review_features, dim=1))
-        return attended
+        return attended, attention
 
     def forward(
         self,
@@ -300,8 +302,8 @@ class NARRE(AbstractRec):
             self.item_word_embedding,
         )
 
-        user_review_item_ids = user_review_item_ids.clamp(min=0, max=self.num_items)
-        item_review_user_ids = item_review_user_ids.clamp(min=0, max=self.num_users)
+        user_review_item_ids = user_review_item_ids.clamp(min=0, max=self.num_items + 1)
+        item_review_user_ids = item_review_user_ids.clamp(min=0, max=self.num_users + 1)
 
         user_review_item_features = cast(
             torch.Tensor,
@@ -314,10 +316,10 @@ class NARRE(AbstractRec):
 
         user_review_mask = user_review.ne(self.pad_idx).any(dim=2)
         item_review_mask = item_review.ne(self.pad_idx).any(dim=2)
-        user_review_mask = user_review_mask & user_review_item_ids.ne(self.num_items)
-        item_review_mask = item_review_mask & item_review_user_ids.ne(self.num_users)
+        user_review_mask = user_review_mask & user_review_item_ids.ne(self.num_items + 1)
+        item_review_mask = item_review_mask & item_review_user_ids.ne(self.num_users + 1)
 
-        attended_user = self._masked_attention(
+        attended_user, user_attention = self._masked_attention(
             review_features=user_review_features,
             review_id_features=user_review_item_features,
             review_fc=self.user_review_fc,
@@ -325,7 +327,7 @@ class NARRE(AbstractRec):
             attention_fc=self.user_attention_fc,
             review_mask=user_review_mask,
         )
-        attended_item = self._masked_attention(
+        attended_item, item_attention = self._masked_attention(
             review_features=item_review_features,
             review_id_features=item_review_user_features,
             review_fc=self.item_review_fc,
@@ -333,6 +335,8 @@ class NARRE(AbstractRec):
             attention_fc=self.item_attention_fc,
             review_mask=item_review_mask,
         )
+        self.last_user_attention = user_attention
+        self.last_item_attention = item_attention
 
         user_feature = cast(torch.Tensor, self.user_feature_fc(self.dropout(attended_user)))
         item_feature = cast(torch.Tensor, self.item_feature_fc(self.dropout(attended_item)))
@@ -377,24 +381,27 @@ class NARRE(AbstractRec):
             user_review_item_ids=user_review_item_ids,
             item_review_user_ids=item_review_user_ids,
         )
-        mse_loss = self.loss_fn(predictions, ratings.view(-1, 1).float())
+        # Original TensorFlow code uses tf.nn.l2_loss(prediction - label), i.e.
+        # one half of the summed squared error for the mini-batch.
+        residual = predictions - ratings.view(-1, 1).float()
+        rating_loss = 0.5 * torch.sum(residual ** 2)
 
-        attention_l2_loss = torch.tensor(0.0, device=mse_loss.device)
+        attention_l2_loss = torch.tensor(0.0, device=rating_loss.device)
         if self.l2_reg_lambda > 0:
             attention_l2_loss = (
-                torch.sum(self.user_review_fc.weight ** 2)
-                + torch.sum(self.user_id_attention_fc.weight ** 2)
-                + torch.sum(self.item_review_fc.weight ** 2)
-                + torch.sum(self.item_id_attention_fc.weight ** 2)
+                0.5 * torch.sum(self.user_review_fc.weight ** 2)
+                + 0.5 * torch.sum(self.user_id_attention_fc.weight ** 2)
+                + 0.5 * torch.sum(self.item_review_fc.weight ** 2)
+                + 0.5 * torch.sum(self.item_id_attention_fc.weight ** 2)
             )
 
-        total_loss = mse_loss + self.l2_reg_lambda * attention_l2_loss
+        total_loss = rating_loss + self.l2_reg_lambda * attention_l2_loss
 
         loss_value = float(total_loss.detach().item())
-        mse_value = float(mse_loss.detach().item())
+        rating_loss_value = float(rating_loss.detach().item())
         l2_value = float(attention_l2_loss.detach().item())
         return total_loss, {
-            "mse_loss": mse_value,
+            "rating_l2_loss": rating_loss_value,
             "attention_l2_loss": l2_value,
             "total_loss": loss_value,
         }
@@ -416,3 +423,90 @@ class NARRE(AbstractRec):
             user_review_item_ids=user_review_item_ids,
             item_review_user_ids=item_review_user_ids,
         )
+
+
+def run_narre_sanity_check() -> dict[str, object]:
+    """Run a tiny CPU-only check of the TensorFlow-compatible NARRE path."""
+
+    class DummyDataset:
+        num_users = 4
+        num_items = 5
+        pad_idx = 0
+        word_to_idx = {"<pad>": 0, "good": 1, "bad": 2, "ok": 3}
+        user_embedding_matrix = torch.empty(4, 8).uniform_(-1.0, 1.0)
+        item_embedding_matrix = torch.empty(4, 8).uniform_(-1.0, 1.0)
+        ratings = torch.tensor([1.0, 3.0, 5.0], dtype=torch.float32)
+
+    configs: dict[str, object] = {
+        "review_length": 6,
+        "review_count": 3,
+        "word_dim": 8,
+        "kernel_count": 4,
+        "kernel_size": 3,
+        "id_dim": 5,
+        "attention_size": 7,
+        "dropout_prob": 0.5,
+        "l2_reg_lambda": 0.001,
+        "mask_padding_attention": False,
+    }
+    model = NARRE(configs, DummyDataset())
+    model.train()
+
+    batch_size = 2
+    user_id = torch.tensor([0, 1], dtype=torch.long)
+    item_id = torch.tensor([2, 3], dtype=torch.long)
+    user_review = torch.tensor(
+        [
+            [[1, 2, 3, 0, 0, 0], [2, 3, 1, 2, 0, 0], [0, 0, 0, 0, 0, 0]],
+            [[3, 1, 2, 3, 1, 0], [1, 1, 2, 2, 3, 0], [2, 2, 3, 3, 1, 0]],
+        ],
+        dtype=torch.long,
+    )
+    item_review = user_review.flip(dims=[1])
+    user_review_item_ids = torch.tensor([[0, 1, 6], [2, 3, 4]], dtype=torch.long)
+    item_review_user_ids = torch.tensor([[1, 2, 5], [0, 3, 1]], dtype=torch.long)
+    ratings = torch.tensor([4.0, 2.0], dtype=torch.float32)
+
+    prediction = model.forward(
+        user_id,
+        item_id,
+        user_review,
+        item_review,
+        user_review_item_ids,
+        item_review_user_ids,
+    )
+    loss, loss_dict = model.cal_loss((
+        user_id,
+        item_id,
+        user_review,
+        item_review,
+        user_review_item_ids,
+        item_review_user_ids,
+        ratings,
+    ))
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.002)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    model.eval()
+    with torch.no_grad():
+        eval_prediction = model.forward(
+            user_id,
+            item_id,
+            user_review,
+            item_review,
+            user_review_item_ids,
+            item_review_user_ids,
+        )
+
+    return {
+        "user_review_shape": tuple(user_review.shape),
+        "item_review_shape": tuple(item_review.shape),
+        "user_attention_shape": tuple(model.last_user_attention.shape) if model.last_user_attention is not None else None,
+        "item_attention_shape": tuple(model.last_item_attention.shape) if model.last_item_attention is not None else None,
+        "prediction_shape": tuple(prediction.shape),
+        "eval_prediction_shape": tuple(eval_prediction.shape),
+        "loss_is_finite": bool(torch.isfinite(loss.detach()).item()),
+        "loss": loss_dict,
+        "batch_size": batch_size,
+    }
