@@ -18,17 +18,23 @@ model:
   embedding_size: 64
   dropout_prob: 0.1
 
-data_path: "/home/infolab/mnt/mingyu/review_rec/dataset"
-other_path: "/home/infolab/mnt/mingyu/review_rec/cached/others"
-embedding_path: "/home/infolab/mnt/mingyu/review_rec/cached/embedding"
-sentiment_path: "/home/infolab/mnt/mingyu/review_rec/cached/sentiment"
-sentiment_model: "cardiffnlp/twitter-roberta-base-sentiment-latest"
-language_model: "sentence-transformers/all-MiniLM-L12-v2"
-review_feature_backend: "sentence_transformer"  # sentence_transformer | bert_whitening | cached
-review_emb_path: null
-bert_whitening_model: "bert-base-uncased"
-bert_whitening_dim: 64
-bert_whitening_pooling: "cls"  # cls | mean
-bert_whitening_normalize: true
-bert_whitening_stats_path: null
-review_input_mode: "token"  # token | embedding
+data:
+  data_path: "/home/infolab/mnt/mingyu/review_rec/dataset"
+  other_path: "/home/infolab/mnt/mingyu/review_rec/cached/others"
+  embedding_path: "/home/infolab/mnt/mingyu/review_rec/cached/embedding"
+  sentiment_path: "/home/infolab/mnt/mingyu/review_rec/cached/sentiment"
+  sentiment_model: "cardiffnlp/twitter-roberta-base-sentiment-latest"
+  language_model: "sentence-transformers/all-MiniLM-L12-v2"
+  use_review_text: false
+  use_review_embedding: false
+  compute_review_embedding: false
+  use_sentiment: false
+  review_feature_backend: "sentence_transformer"  # sentence_transformer | bert_whitening | cached
+  review_emb_path: null
+  use_bert_whitening: false
+  bert_whitening_model: "bert-base-uncased"
+  bert_whitening_dim: 64
+  bert_whitening_pooling: "cls"  # cls | mean
+  bert_whitening_normalize: true
+  bert_whitening_cache_scope: "full"  # full | split
+  bert_whitening_stats_path: null

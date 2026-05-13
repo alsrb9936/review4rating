@@ -162,6 +162,7 @@ class IARDRMTrainer(BaseTrainer):
         all_p_inc = []
         all_alignment = []
         all_intent_entropy = []
+        all_empty_history = []
         edge_index, edge_weight = self._get_graph_inputs(self.train_dataloader)
 
         for batch in tqdm(self.train_dataloader, desc=f"Epoch {epoch_idx + 1}"):
@@ -206,6 +207,9 @@ class IARDRMTrainer(BaseTrainer):
             all_p_inc.append(_to_numpy(output["p_inc"]))
             all_alignment.append(_to_numpy(output["alignment"]))
             all_intent_entropy.append(_to_numpy(_intent_entropy(output["intent_weights"])))
+            empty_history_mask = batch.get("empty_history_mask")
+            if empty_history_mask is not None:
+                all_empty_history.append(empty_history_mask.detach().cpu().numpy().astype(np.float32))
 
         if epoch_loss_sums is None:
             return {}
@@ -224,6 +228,8 @@ class IARDRMTrainer(BaseTrainer):
         averaged["mean_p_inc"], averaged["std_p_inc"] = _summarize_distribution(p_inc_values)
         averaged["mean_alignment"], averaged["std_alignment"] = _summarize_distribution(alignment_values)
         averaged["mean_intent_entropy"], _ = _summarize_distribution(intent_entropy_values)
+        if all_empty_history:
+            averaged["mean_empty_history_ratio"] = float(np.concatenate(all_empty_history).mean())
         return averaged
 
     @torch.no_grad()
@@ -240,6 +246,8 @@ class IARDRMTrainer(BaseTrainer):
         all_yY = []
         all_yS = []
         all_yR = []
+        all_empty_history = []
+        all_review_source = []
         edge_index, edge_weight = self._get_graph_inputs(dataloader)
 
         for batch in dataloader:
@@ -268,6 +276,12 @@ class IARDRMTrainer(BaseTrainer):
             all_yY.append(_to_numpy(output["yY"]))
             all_yS.append(_to_numpy(output["yS"]))
             all_yR.append(_to_numpy(output["yR"]))
+            empty_history_mask = batch.get("empty_history_mask")
+            if empty_history_mask is not None:
+                all_empty_history.append(empty_history_mask.detach().cpu().numpy().astype(np.float32))
+            review_source_used = batch.get("review_source_used")
+            if review_source_used is not None:
+                all_review_source.append(review_source_used.detach().cpu().numpy())
 
         if not all_ratings:
             empty = np.array([], dtype=np.float64)
@@ -284,6 +298,8 @@ class IARDRMTrainer(BaseTrainer):
         yY_values = np.concatenate(all_yY)
         yS_values = np.concatenate(all_yS)
         yR_values = np.concatenate(all_yR)
+        empty_history_values = np.concatenate(all_empty_history) if all_empty_history else None
+        review_source_values = np.concatenate(all_review_source) if all_review_source else None
         predictions = (
             np.clip(raw_predictions, self.min_rating, self.max_rating)
             if self.eval_clip
@@ -294,6 +310,8 @@ class IARDRMTrainer(BaseTrainer):
         metrics["mean_p_inc"], metrics["std_p_inc"] = _summarize_distribution(p_inc_values)
         metrics["mean_alignment"], metrics["std_alignment"] = _summarize_distribution(alignment_values)
         metrics["mean_intent_entropy"], _ = _summarize_distribution(intent_entropy_values)
+        if empty_history_values is not None:
+            metrics["mean_empty_history_ratio"] = float(empty_history_values.mean())
         metrics.update(self._build_alignment_group_metrics(alignment_values, predictions, ratings))
 
         if phase == "test":
@@ -315,6 +333,8 @@ class IARDRMTrainer(BaseTrainer):
                         "yY": float(yY_values[idx]),
                         "yS": float(yS_values[idx]),
                         "yR": float(yR_values[idx]),
+                        "empty_history_mask": bool(empty_history_values[idx]) if empty_history_values is not None else False,
+                        "review_source_used": int(review_source_values[idx]) if review_source_values is not None else -1,
                     }
                 )
             csv_path = self._write_eval_csv(phase=phase, records=records)
@@ -360,6 +380,9 @@ def run_iard_trainer_sanity_check():
         "tau_c": 0.2,
         "detach_gate_for_align": True,
         "detach_zx_for_recon": False,
+        "review_context_mode": "history",
+        "history_aggregation": "mean",
+        "history_temporal": False,
     }
     import pandas as pd
 
@@ -378,6 +401,8 @@ def run_iard_trainer_sanity_check():
         "item_ids": dataset.item_ids[:4],
         "ratings": dataset.ratings[:4],
         "review_emb": dataset.review_emb[:4],
+        "empty_history_mask": dataset.empty_history_mask[:4],
+        "review_source_used": dataset.review_source_used[:4],
     }
     output = model(
         user_ids=batch["user_ids"],

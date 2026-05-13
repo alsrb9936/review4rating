@@ -108,25 +108,12 @@ def args_parser():
     parser.add_argument("--gpu", type=int, default=3, help="GPU ID")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--mode", type=str, default="train", help="train or eval")
-    
     parser.add_argument("--result_path", type=str, default=None, help="Path to results folder (for eval mode)")
     parser.add_argument("--batch", type=int, default=None)
     parser.add_argument("--epoch", type=int, default=None)
     parser.add_argument("--eval_batch", type=int, default=None)
     parser.add_argument("--eval_step", type=int, default=None, help="Evaluation every N epochs")
-    parser.add_argument("--sentiment", type=bool, default=False, help="Only evaluate the model")
-    parser.add_argument("--review_emb_path", type=str, default=None, help="Path to precomputed review embeddings")
-    parser.add_argument("--review_feature_backend", type=str, default=None, choices=["sentence_transformer", "bert_whitening", "cached"], help="Review feature backend")
-    parser.add_argument("--review_dim", type=int, default=None, help="Review embedding dimension")
-    parser.add_argument("--bert_whitening_dim", type=int, default=None, help="Output dimension for BERT-Whitening review features")
-    parser.add_argument("--review_input_mode", type=str, default=None, choices=["token", "embedding"], help="SSG review input mode")
-    parser.add_argument("--ssg_preset", type=str, default=None, choices=["custom", "set_only", "set_sequence", "set_graph", "full", "no_decov"], help="SSG ablation preset")
-    parser.add_argument("--overfit_n", type=int, default=None, help="Train on only N interactions for overfit debugging")
-    parser.add_argument("--split_protocol", type=str, default=None, choices=["default", "reviewgraph"], help="Data split protocol")
-    parser.add_argument("--loss_preset", type=str, default=None, help="IARD loss preset: rating_only, review_fusion, align_only, full_iard, full_no_sep, full_no_residual_pred, full_fixed_gate, full_eta_0_3, full_low_align")
-    parser.add_argument("--eval_clip", type=str_to_bool, default=None, help="Clip validation/test predictions to [min_rating, max_rating]")
     parser.add_argument("--drop_cold_start_eval", type=str_to_bool, default=None, help="Drop valid/test rows with users/items unseen in train")
-    
     return parser.parse_args()
 
 
@@ -215,7 +202,9 @@ def prepare_data(configs):
             "These metrics are debug-only and intentionally leak train data into validation/test."
         )
     valid_df, test_df = diagnose_and_filter_cold_start(train_df, valid_df, test_df, configs)
-    train_df, valid_df, test_df = attach_bert_whitening_review_features(train_df, valid_df, test_df, configs)
+    use_bert_whitening = _config_bool(configs, "use_bert_whitening", False)
+    if use_bert_whitening:
+        train_df, valid_df, test_df = attach_bert_whitening_review_features(train_df, valid_df, test_df, configs)
     train_loader, valid_loader, test_loader = get_dataloader(train_df, valid_df, test_df, configs)
     return {
         'train_df': train_df,
@@ -295,27 +284,6 @@ def eval_mode(args):
     configs['data_path'] = args.data_path
     configs['result_path'] = args.result_path
     configs['gpu'] = args.gpu
-    if args.review_emb_path is not None:
-        configs['review_emb_path'] = args.review_emb_path
-    if args.review_feature_backend is not None:
-        configs['review_feature_backend'] = args.review_feature_backend
-    if args.review_dim is not None:
-        configs['review_dim'] = args.review_dim
-    if args.bert_whitening_dim is not None:
-        configs['bert_whitening_dim'] = args.bert_whitening_dim
-        configs['review_dim'] = args.bert_whitening_dim
-    if args.review_input_mode is not None:
-        configs['review_input_mode'] = args.review_input_mode
-    if args.ssg_preset is not None:
-        configs['ssg_preset'] = args.ssg_preset
-    if args.split_protocol is not None:
-        configs['split_protocol'] = args.split_protocol
-    if args.overfit_n is not None:
-        configs['overfit_n'] = args.overfit_n
-    if args.loss_preset is not None:
-        configs['loss_preset'] = args.loss_preset
-    if args.eval_clip is not None:
-        configs['eval_clip'] = args.eval_clip
     if args.drop_cold_start_eval is not None:
         configs['drop_cold_start_eval'] = args.drop_cold_start_eval
     apply_iard_loss_preset(configs)
@@ -371,7 +339,7 @@ def main():
         paths=['default.yaml'],
         model_name=args.model
     )
-    
+
     cli_overrides = {
         'batch': args.batch,
         'eval_batch': args.eval_batch,
@@ -379,28 +347,13 @@ def main():
         'eval_step': args.eval_step,
         'gpu': args.gpu,
         'seed': args.seed,
-        'review_emb_path': args.review_emb_path,
-        'review_feature_backend': args.review_feature_backend,
-        'review_dim': args.review_dim,
-        'bert_whitening_dim': args.bert_whitening_dim,
-        'review_input_mode': args.review_input_mode,
-        'ssg_preset': args.ssg_preset,
-        'split_protocol': args.split_protocol,
-        'overfit_n': args.overfit_n,
-        'loss_preset': args.loss_preset,
-        'eval_clip': args.eval_clip,
         'drop_cold_start_eval': args.drop_cold_start_eval,
     }
     configs.merge({k: v for k, v in cli_overrides.items() if v is not None})
-    
+
     configs['dataset'] = args.dataset
     if not configs.get('basemodel'):
         configs['basemodel'] = args.model
-    configs['sentiment'] = args.sentiment
-    if args.review_dim is not None:
-        configs['review_dim'] = args.review_dim
-    if args.bert_whitening_dim is not None:
-        configs['review_dim'] = args.bert_whitening_dim
     apply_iard_loss_preset(configs)
     
     setup_environment(configs)

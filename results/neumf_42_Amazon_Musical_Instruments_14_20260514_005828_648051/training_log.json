@@ -1,0 +1,42 @@
+[
+  {
+    "epoch": 1,
+    "train": {
+      "mse_loss": 18.31380647601503,
+      "total_loss": 18.31380647601503
+    },
+    "valid": {
+      "mse": 12.59213448531631,
+      "rmse": 3.54853976803365,
+      "mae": 3.4301391150983918,
+      "num_samples": 1026,
+      "eval_clip": true,
+      "min_rating": 1.0,
+      "max_rating": 5.0,
+      "unclipped_prediction_min": 0.49161019921302795,
+      "unclipped_prediction_max": 1.5629498958587646,
+      "clipped_prediction_min": 1.0,
+      "clipped_prediction_max": 1.5629498958587646,
+      "label_min": 1.0,
+      "label_max": 5.0,
+      "rating_mean": 4.480506896972656,
+      "rating_std": 0.9145297408103943,
+      "rating_distribution": {
+        "1.0": 27,
+        "2.0": 20,
+        "3.0": 79,
+        "4.0": 207,
+        "5.0": 693
+      },
+      "pred_mean": 1.0516922240368805,
+      "pred_std": 0.09360272248253418,
+      "pred_min": 1.0,
+      "pred_max": 1.5629498958587646,
+      "abs_error_mean": 3.4301391150983918,
+      "abs_error_p90": 4.0,
+      "abs_error_p95": 4.0,
+      "abs_error_p99": 4.0,
+      "abs_error_max": 4.0
+    }
+  }
+]

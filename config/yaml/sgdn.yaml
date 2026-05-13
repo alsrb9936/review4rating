@@ -1,61 +1,95 @@
 # SGDN Configuration
 # Self-supervised Graph Disentangled Networks for Review-based Recommendation
+#
+# Naming convention:
+# - Project canonical keys: review_dim, num_factors, num_layers, cl_weight, classification.
+# - Original SGDN keys: review_feat_size, num_factor, num_layer, lamda, train_classification.
+# - Both names are kept where useful so the upstream-code mapping is visible.
 
 model:
   name: "sgdn"
-  
-  # Embedding dimensions
-  embedding_size: 64
-  hidden_dim: 64
-  
-  # Graph convolution settings
-  num_layers: 1
+
+  # Embedding dimensions / original SGDN aliases
+  # original: review_feat_size=64, gcn_agg_units=review_feat_size, gcn_out_units=review_feat_size
+  embedding_size: 64        # legacy project key; DGL SGDN does not use a separate MF embedding.
+  review_dim: 384
+  review_feat_size: 384     # original SGDN alias for review_dim
+  hidden_dim: 64            # project canonical final user/item embedding dim
+  gcn_agg_units: 64         # original SGDN message units before factor split
+  gcn_out_units: 64         # original SGDN output units; kept equal to hidden_dim/review_dim
+
+  # Graph convolution settings / original SGDN aliases
+  num_layers: 1             # project canonical key
+  num_layer: 1              # original SGDN alias
+  gcn_agg_norm_symm: true   # original SGDN key; maps to project symm
+  gcn_agg_accum: "sum"      # original SGDN key; HeteroGraphConv aggregate stays sum/stack by layer
   dropout: 0.8
   gcn_dropout: 0.8
-  factor_dropout: 0.0
+  factor_dropout: 0.0       # legacy project key; retained for config compatibility
   pred_dropout: 0.0
-  
+
   # Review feature settings
-  # sentence_transformer default is 384; CLI --bert_whitening_dim also sets review_dim.
-  review_dim: 64
-  use_review: true  # Whether to use review features
-  symm: true  # Symmetric normalization
-  
+  # CLI --bert_whitening_dim also sets review_dim in main.py.
+  use_review: true
+  symm: true                # project canonical alias for gcn_agg_norm_symm
+
   # Disentangled representation settings
-  num_factors: 2  # Number of latent factors (K)
-  
+  num_factors: 4            # project canonical key
+  num_factor: 4             # original SGDN alias
+
   # Contrastive learning settings
   use_contrastive: true
-  cl_weight: 0.005
-  temperature: 0.2
+  cl_weight: 0.005          # project canonical key
+  lamda: 0.005              # original SGDN alias for cl_weight
+  temperature: 0.2          # original cal_c_loss tau
+  edge_temperature: 0.5     # original GCMCLayer edge-weight tau
   num_pos: 10
   num_neg: 2048
   use_review_prototypes: true
   init_review_prototypes: true
   debug_shapes: false
-  
+
   # Disentanglement regularization
   disentangle_weight: 0.0
-  
-  # Prediction mode
+
+  # Prediction mode / original SGDN aliases
   classification: false
+  train_classification: false
   init_pred_bias_with_rating_mean: true
 
 training:
+  # This project uses full-graph SGDN batches, so batch/eval_batch must stay 1.
+  # original SGDN batch_size=2048 is not used by this full-graph trainer.
   batch: 1
   eval_batch: 1
+  batch_size: 2048          # original SGDN alias kept for reference only
   epoch: 2000
+  train_max_iter: 2000      # original SGDN alias for epoch
   lr: 0.01
+  train_lr: 0.01            # original SGDN alias for lr
+  train_min_lr: 0.001
+  train_lr_decay_factor: 0.5
+  train_decay_patience: 50
   weight_decay: 0.0
   early_stop_patience: 100
-  grad_clip: 1.0  # Gradient clipping threshold
+  train_early_stopping_patience: 100
+  grad_clip: 1.0
+  train_grad_clip: 1.0
   eval_step: 1
+  train_log_interval: 1
+  train_valid_interval: 1
+  train_optimizer: "Adam"
 
 evaluation:
   best_metric_name: "rmse"
   metrics: ["rmse", "mse", "mae"]
   eval_clip: false
 
-# Data paths and settings
 data:
-  use_cached_graphs: true  # Cache constructed graphs
+  use_cached_graphs: true
+  use_review_text: false
+  use_review_embedding: true
+  compute_review_embedding: true
+  use_sentiment: false
+  review_feature_backend: "sentence_transformer"
+  use_bert_whitening: false

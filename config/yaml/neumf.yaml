@@ -1,7 +1,13 @@
 basemodel: "neumf"
-mf_embedding_size: 64
-mlp_embedding_size: 64
-mlp_hidden_size: [128, 64]
-dropout_prob: 0.1
-weight_decay: 0
-eval_clip: true
+model:
+  mf_embedding_size: 64
+  mlp_embedding_size: 64
+  mlp_hidden_size: [128, 64]
+  dropout_prob: 0.1
+  weight_decay: 0
+evaluation:
+  eval_clip: true
+data:
+  use_review_text: false
+  use_review_embedding: false
+  use_sentiment: false

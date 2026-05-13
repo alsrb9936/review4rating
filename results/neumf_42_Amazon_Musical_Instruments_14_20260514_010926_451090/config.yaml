@@ -1,0 +1,107 @@
+training:
+  batch: 256
+  training:
+    batch: 256
+    eval_batch: 256
+    epoch: 200
+    lr: 0.001
+    weight_decay: 0.0
+  eval_batch: 256
+  epoch: 1
+  lr: 0.001
+  weight_decay: 0
+evaluation:
+  eval_step: 1
+  evaluation:
+    eval_step: 1
+    early_stop_patience: 10
+    best_metric_name: rmse
+    eval_clip: true
+    drop_cold_start_eval: true
+    min_rating: 1.0
+    max_rating: 5.0
+  early_stop_patience: 10
+  best_metric_name: rmse
+  eval_clip: true
+  drop_cold_start_eval: true
+  min_rating: 1.0
+  max_rating: 5.0
+model:
+  embedding_size: 64
+  model:
+    embedding_size: 64
+    dropout_prob: 0.1
+    mf_embedding_size: 64
+    mlp_embedding_size: 64
+    mlp_hidden_size: &id001
+    - 128
+    - 64
+  dropout_prob: 0.1
+  mf_embedding_size: 64
+  mlp_embedding_size: 64
+  mlp_hidden_size: *id001
+  weight_decay: 0
+  training:
+    weight_decay: 0
+data:
+  data_path: /home/infolab/mnt/mingyu/review_rec/dataset
+  data:
+    data_path: /home/infolab/mnt/mingyu/review_rec/dataset
+    other_path: /home/infolab/mnt/mingyu/review_rec/cached/others
+    embedding_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding
+    sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
+    sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
+    language_model: sentence-transformers/all-MiniLM-L12-v2
+    use_review_text: false
+    use_review_embedding: false
+    compute_review_embedding: false
+    use_sentiment: false
+    review_feature_backend: sentence_transformer
+    review_emb_path: null
+    use_bert_whitening: false
+    bert_whitening_model: bert-base-uncased
+    bert_whitening_dim: 64
+    bert_whitening_pooling: cls
+    bert_whitening_normalize: true
+    bert_whitening_cache_scope: full
+    bert_whitening_stats_path: null
+  other_path: /home/infolab/mnt/mingyu/review_rec/cached/others
+  embedding_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding
+  sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
+  sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
+  language_model: sentence-transformers/all-MiniLM-L12-v2
+  use_review_text: false
+  use_review_embedding: false
+  compute_review_embedding: false
+  use_sentiment: false
+  review_feature_backend: sentence_transformer
+  review_emb_path: null
+  use_bert_whitening: false
+  bert_whitening_model: bert-base-uncased
+  bert_whitening_dim: 64
+  bert_whitening_pooling: cls
+  bert_whitening_normalize: true
+  bert_whitening_cache_scope: full
+  bert_whitening_stats_path: null
+basemodel: neumf
+gpu: 3
+seed: 42
+dataset: Amazon_Musical_Instruments_14
+result_path: results/neumf_42_Amazon_Musical_Instruments_14_20260514_010926_451090
+cold_start_eval_summary:
+  valid:
+    num_samples_before: 1026
+    cold_user_count: 0
+    cold_item_count: 0
+    cold_interaction_count: 0
+    removed_count: 0
+    num_samples_after: 1026
+  test:
+    num_samples_before: 1027
+    cold_user_count: 0
+    cold_item_count: 0
+    cold_interaction_count: 0
+    removed_count: 0
+    num_samples_after: 1027
+num_users: 1429
+num_items: 900

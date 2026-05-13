@@ -471,6 +471,9 @@ def run_iard_rm_sanity_check():
         "alignment",
         "p_inc",
         "gate",
+        "yY",
+        "yS",
+        "yR",
         "recon_zX",
     }
     if set(output.keys()) != expected_keys:

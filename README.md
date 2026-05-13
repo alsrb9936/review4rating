@@ -52,11 +52,13 @@ Config defaults:
 - `num_factors: 2`, `dropout: 0.8`, `lr: 0.01`, `epoch: 2000`
 - `cl_weight: 0.005`, `num_pos: 10`, `num_neg: 2048`
 - `classification: false`, `disentangle_weight: 0.0`
-- `review_dim: 64`, `debug_shapes: false`
+- `review_dim: 64`, `temperature: 0.2`, `edge_temperature: 0.5`, `debug_shapes: false`
 - `eval_clip: false` (no clipping for baseline comparison)
+- Dependencies: `dgl`; optional `faiss-cpu` for prototype KMeans, otherwise sklearn `KMeans` is used.
 
 ```bash
 python main.py --model sgdn --dataset Amazon_Musical_Instruments_14 --mode train --split_protocol reviewgraph --eval_clip false
+python main.py --model sgdn --dataset Amazon_Musical_Instruments_14 --mode train --overfit_n 512 --epoch 20 --batch 1
 ```
 
 ### RGCL (Graph Contrastive Learning)

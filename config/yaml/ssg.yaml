@@ -1,46 +1,49 @@
 basemodel: "ssg"
-review_input_mode: "token"
-glove_path: "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt"
-batch: 100
-epoch: 6
-lr: 0.002
-review_count: 10
-review_length: 40
-seq_count: 10
-word_dim: 300
-filter_sizes: [3]
-num_filters: 100
-id_dim: 32
-attention_size: 32
-gru_dim: 32
-time_dim: 32
-latent_dim: 8
-# View presets:
-# - Full SSG (paper default): set + sequence + graph all enabled.
-# - Set-only ablation: set use_sequence_view/use_graph_view to false.
-# - Set+sequence ablation: keep use_sequence_view true and set use_graph_view false.
-ssg_preset: "full"
-use_set_view: true
-use_sequence_view: true
-use_graph_view: true
-graph_hidden_dim: 64
-graph_node_dim: 128
-graph_attention_dim: 32
-n_hops: 2
-n_heads: 8
-alpha: 0.25
-beta: 1.0
-max_rel_bucket: 100
-time_percentile: 10.0
-dropout_prob: 0.0
-keep_prob: 1.0
-decov_lambda: 0.01
-l2_lambda: 1.0
-retain_rui: false
-debug_shapes: true
-train_clip: false
-test_clip: true
-lr_decay: 1.0
-min_rating: 1.0
-max_rating: 5.0
-weight_decay: 0.0
+model:
+  name: "ssg"
+  review_input_mode: "token"
+  review_count: 10
+  review_length: 40
+  seq_count: 10
+  word_dim: 300
+  filter_sizes: [3]
+  num_filters: 100
+  id_dim: 32
+  attention_size: 32
+  gru_dim: 32
+  time_dim: 32
+  latent_dim: 8
+  ssg_preset: "full"
+  use_set_view: true
+  use_sequence_view: true
+  use_graph_view: true
+  graph_hidden_dim: 64
+  graph_node_dim: 128
+  graph_attention_dim: 32
+  n_hops: 2
+  n_heads: 8
+  alpha: 0.25
+  beta: 1.0
+  max_rel_bucket: 100
+  time_percentile: 10.0
+  dropout_prob: 0.0
+  keep_prob: 1.0
+  decov_lambda: 0.01
+  l2_lambda: 1.0
+  retain_rui: false
+  debug_shapes: true
+  train_clip: false
+  test_clip: true
+  lr_decay: 1.0
+  min_rating: 1.0
+  max_rating: 5.0
+  weight_decay: 0.0
+data:
+  use_review_text: true
+  use_review_embedding: false
+  use_sentiment: false
+  glove_path: "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt"
+training:
+  batch: 100
+  epoch: 6
+  lr: 0.002
