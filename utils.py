@@ -121,8 +121,7 @@ def _bert_whitening_cache_paths(configs) -> tuple[str, str]:
     dim = int(configs.get("bert_whitening_dim", configs.get("review_dim", 64)))
     split_protocol = str(configs.get("split_protocol", "default"))
     seed = int(configs.get("seed", 42))
-    overfit_n = int(configs.get("overfit_n", 0) or 0)
-    cache_name = f"bert_whitening_{model_name}_{pooling}_{dim}_{split_protocol}_seed{seed}_overfit{overfit_n}"
+    cache_name = f"bert_whitening_{model_name}_{pooling}_{dim}_{split_protocol}_seed{seed}"
     cache_dir = os.path.join(str(configs["embedding_path"]), dataset)
     return os.path.join(cache_dir, f"{cache_name}.pt"), os.path.join(cache_dir, f"{cache_name}_stats.pt")
 
@@ -515,7 +514,7 @@ def get_dataloader(train_df, valid_df, test_df, configs):
     if model_name == "narre":
         from data.narre_dataset import NARREDataset
 
-        train_dataset = NARREDataset(train_df, configs, split="train")
+        train_dataset = NARREDataset(train_df, configs, split="train", fit_df=valid_df)
         valid_dataset = NARREDataset(valid_df, configs, split="valid", train_dataset=train_dataset)
         test_dataset = NARREDataset(test_df, configs, split="test", train_dataset=train_dataset)
     elif model_name == "ssg":

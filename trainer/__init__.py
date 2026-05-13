@@ -5,6 +5,7 @@ from .ssg_trainer import SSGTrainer
 from .rgcl_trainer import RGCLTrainer
 from .iard_rm_trainer import IARDRMTrainer
 from .sgdn_trainer import SGDNTrainer
+from .daml_trainer import DAMLTrainer
 
 MODEL_TRAINER_DICT = {
     "neumf": NeuMFTrainer,
@@ -14,4 +15,5 @@ MODEL_TRAINER_DICT = {
     "rgcl": RGCLTrainer,
     "iard_rm": IARDRMTrainer,
     "sgdn": SGDNTrainer,
+    "daml": DAMLTrainer,
 }

@@ -58,7 +58,6 @@ Config defaults:
 
 ```bash
 python main.py --model sgdn --dataset Amazon_Musical_Instruments_14 --mode train --split_protocol reviewgraph --eval_clip false
-python main.py --model sgdn --dataset Amazon_Musical_Instruments_14 --mode train --overfit_n 512 --epoch 20 --batch 1
 ```
 
 ### RGCL (Graph Contrastive Learning)
@@ -83,15 +82,7 @@ SSG combines set, temporal sequence, and full-graph review views for rating pred
 python main.py --model ssg --dataset Amazon_Musical_Instruments_14 --mode train --ssg_preset full
 ```
 
-### 2. Small Overfit / Smoke Test
-
-```bash
-python main.py --model ssg --dataset Amazon_Musical_Instruments_14 --mode train --overfit_n 100 --epoch 20 --batch 8 --ssg_preset full
-```
-
-`--overfit_n` intentionally reuses the same interactions for train/valid/test, so those metrics are debug-only.
-
-### 3. Ablation Presets
+### 2. Ablation Presets
 
 ```bash
 python main.py --model ssg --dataset Amazon_Musical_Instruments_14 --mode train --ssg_preset set_only
@@ -126,25 +117,19 @@ python -c "from model.iard_rm import run_iard_rm_sanity_check; print(run_iard_rm
 python -c "from trainer.iard_rm_trainer import run_iard_trainer_sanity_check; print(run_iard_trainer_sanity_check())"
 ```
 
-### 2. Small Overfit
-
-```bash
-python main.py --model iard_rm --dataset Amazon_Musical_Instruments_14 --mode train --overfit_n 100 --epoch 200 --batch 32
-```
-
-### 3. Rating-Only Training
+### 2. Rating-Only Training
 
 ```bash
 python main.py --model iard_rm --dataset Amazon_Musical_Instruments_14 --mode train --loss_preset rating_only
 ```
 
-### 4. Full IARD Training
+### 3. Full IARD Training
 
 ```bash
 python main.py --model iard_rm --dataset Amazon_Musical_Instruments_14 --mode train --loss_preset full_iard
 ```
 
-### 5. Ablation Training
+### 4. Ablation Training
 
 ```bash
 python main.py --model iard_rm --dataset Amazon_Musical_Instruments_14 --mode train --loss_preset review_fusion

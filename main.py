@@ -187,20 +187,12 @@ def prepare_data(configs):
     print("prepare data")
     inter_df = load_interaction_data(configs)
     split_protocol = configs.get('split_protocol', 'default')
+
     if split_protocol == 'reviewgraph':
         train_df, valid_df, test_df = split_by_reviewgraph(inter_df, seed=configs.get('seed', 42))
     else:
         train_df, valid_df, test_df = split_by_ratio(inter_df, random_state=configs.get('seed', 42))
-    overfit_n = int(configs.get('overfit_n', 0) or 0)
-    if overfit_n > 0:
-        overfit_n = min(overfit_n, len(train_df))
-        train_df = train_df.iloc[:overfit_n].reset_index(drop=True)
-        valid_df = train_df.copy()
-        test_df = train_df.copy()
-        print(
-            f"overfit mode enabled: using the same {overfit_n} train interactions for train/valid/test. "
-            "These metrics are debug-only and intentionally leak train data into validation/test."
-        )
+        
     valid_df, test_df = diagnose_and_filter_cold_start(train_df, valid_df, test_df, configs)
     use_bert_whitening = _config_bool(configs, "use_bert_whitening", False)
     if use_bert_whitening:
@@ -251,17 +243,12 @@ def train_mode(configs, data_dict):
     print("\n" + "="*50)
     print("Loading best model and evaluating on test set...")
     print("="*50)
-    if int(configs.get('overfit_n', 0) or 0) > 0:
-        print("WARNING: overfit mode is active. Reported validation/test metrics are not generalization metrics.")
 
     best_model_path = os.path.join(result_path, 'best_model.pt')
     trainer.load_checkpoint(best_model_path)
 
     test_metrics = trainer.evaluate(data_dict['test_loader'], phase='test')
     test_metrics['best_valid_metric'] = float(best_valid_metric)
-    inspect_batch_fn = getattr(trainer, 'inspect_batch', None)
-    if int(configs.get('overfit_n', 0) or 0) > 0 and callable(inspect_batch_fn):
-        print("debug train batch inspect:", inspect_batch_fn(dataloader=data_dict['train_loader'], backward=False))
     print("\nTest Results:")
     print_results(test_metrics)
 

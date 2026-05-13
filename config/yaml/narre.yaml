@@ -4,9 +4,14 @@ data:
   use_review_embedding: false
   use_sentiment: false
   glove_path: "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt"
+  drop_cold_start_eval: false
 model:
-  review_count: 10
-  review_length: 40
+  # original: reproduce chenchongthu/NARRE pro_data/data_pro.py preprocessing
+  # fair: use train-only metadata with target-review/cold-start leakage avoided via
+  #       retain_rui=false, original_cold_start_dummy=false, drop_cold_start_eval=true
+  narre_preprocess_mode: "original"
+  auto_review_shape: true
+  original_cold_start_dummy: true
   word_dim: 300
   kernel_count: 100
   kernel_size: 3
@@ -18,10 +23,10 @@ model:
   l2_reg_lambda: 0.001
   mask_padding_attention: false
   word_embedding_cpu: false
-  retain_rui: true
+  retain_rui: false
 training:
-  batch: 100
-  epoch: 40
+  batch: 128
+  epoch: 500
   lr: 0.002
   lr_decay: 1.0
   weight_decay: 0.0

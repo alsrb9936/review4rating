@@ -29,7 +29,6 @@ class Config(dict[str, Any]):
             "train_log_interval",
             "train_valid_interval",
             "train_optimizer",
-            "overfit_n",
         },
         "evaluation": {
             "eval_step",

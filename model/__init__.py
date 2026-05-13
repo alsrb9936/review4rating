@@ -5,6 +5,7 @@ from .ssg import SSG
 from .rgcl import RGCL
 from .iard_rm import IARDRM
 from .sgdn import SGDN
+from .daml import DAML
 
 
 MODEL_DICT = {
@@ -15,4 +16,5 @@ MODEL_DICT = {
     "rgcl": RGCL,
     "iard_rm": IARDRM,
     "sgdn": SGDN,
+    "daml": DAML,
 }

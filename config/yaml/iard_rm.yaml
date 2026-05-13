@@ -39,7 +39,6 @@ training:
   lr: 0.001
   weight_decay: 0.0
   grad_clip: 1.0
-  overfit_n: 0
 
 evaluation:
   eval_step: 1
