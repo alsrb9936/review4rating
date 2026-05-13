@@ -51,16 +51,7 @@ class DAMLDataset(RecDataset):
         self.item_ids = torch.as_tensor(df["item_id"].to_numpy(dtype=np.int64), dtype=torch.long)
         self.ratings = torch.as_tensor(df["rating"].to_numpy(dtype=np.float32), dtype=torch.float32)
 
-        if train_dataset is not None:
-            self.pad_idx = train_dataset.pad_idx
-            self.word_to_idx = train_dataset.word_to_idx
-            self.embedding_matrix = train_dataset.embedding_matrix.clone()
-        else:
-            vocab, embedding_matrix, self.pad_idx = self._load_glove(self.glove_path, self.word_dim)
-            self.word_to_idx = vocab
-            self.embedding_matrix = embedding_matrix
-
-        # Build interactions: (user_id, item_id, review_text)
+        # Build interactions first so we can derive vocab from review text
         self.interactions: List[Tuple[int, int, str]] = []
         for row in df.itertuples(index=False):
             review_text = self._normalize_text(getattr(row, "reviewText", ""))
@@ -71,6 +62,18 @@ class DAMLDataset(RecDataset):
                     review_text,
                 )
             )
+
+        if train_dataset is not None:
+            self.pad_idx = train_dataset.pad_idx
+            self.word_to_idx = train_dataset.word_to_idx
+            self.embedding_matrix = train_dataset.embedding_matrix.clone()
+        else:
+            vocab_tokens = self._build_vocab_from_reviews(df)
+            vocab, embedding_matrix, self.pad_idx = self._load_glove_for_vocab(
+                self.glove_path, self.word_dim, vocab_tokens
+            )
+            self.word_to_idx = vocab
+            self.embedding_matrix = embedding_matrix
 
         # Build review lookups
         self.review_lookup_by_user = self._build_review_lookups(self.interactions, use_user_key=True)
@@ -90,15 +93,35 @@ class DAMLDataset(RecDataset):
             self._setup_evaluation_from_train(train_dataset)
 
     @classmethod
-    def _load_glove(cls, glove_path: str, word_dim: int) -> Tuple[Dict[str, int], torch.Tensor, int]:
-        cache_key = f"{glove_path}:{word_dim}"
+    def _build_vocab_from_reviews(cls, df: pd.DataFrame) -> set[str]:
+        """Collect unique tokens from all review texts in the dataset."""
+        vocab_tokens: set[str] = set()
+        for row in df.itertuples(index=False):
+            text = cls._normalize_text(getattr(row, "reviewText", ""))
+            vocab_tokens.update(cls._tokenize(text))
+        vocab_tokens.discard("")
+        return vocab_tokens
+
+    @classmethod
+    def _load_glove_for_vocab(
+        cls,
+        glove_path: str,
+        word_dim: int,
+        vocab_tokens: set[str],
+    ) -> Tuple[Dict[str, int], torch.Tensor, int]:
+        """Load GloVe embeddings only for tokens present in the dataset vocab.
+
+        This prevents embedding tables from growing to millions of parameters
+        when the pretrained file contains 3M+ words.
+        """
+        cache_key = (glove_path, word_dim, frozenset(vocab_tokens))
         if cache_key in cls._glove_cache:
             return cls._glove_cache[cache_key]
 
-        # DAML original initializes word embeddings uniformly in [-1, 1]
-        # then overwrites with pre-trained vectors (same as NARRE)
         word_to_idx: Dict[str, int] = {"<pad>": 0, "<sep>": 1}
+        # Start with zero vectors; will overwrite with GloVe or random init
         vectors: List[List[float]] = [[0.0] * word_dim, [0.0] * word_dim]
+        found_in_glove: set[str] = set()
 
         with open(glove_path, "r", encoding="utf-8") as glove_file:
             for line in glove_file:
@@ -106,11 +129,19 @@ class DAMLDataset(RecDataset):
                 if len(parts) != word_dim + 1:
                     continue
                 token = parts[0]
-                if token in word_to_idx:
+                if token not in vocab_tokens or token in word_to_idx:
                     continue
                 values = [float(value) for value in parts[1:]]
                 word_to_idx[token] = len(vectors)
                 vectors.append(values)
+                found_in_glove.add(token)
+
+        # OOV tokens: initialize with uniform random in [-1, 1]
+        oov_tokens = vocab_tokens - found_in_glove
+        for token in sorted(oov_tokens):
+            if token not in word_to_idx:
+                word_to_idx[token] = len(vectors)
+                vectors.append(np.random.uniform(-1.0, 1.0, word_dim).tolist())
 
         embedding_matrix = torch.tensor(vectors, dtype=torch.float32)
         # Initialize <sep> with small random values (not in GloVe)
@@ -223,9 +254,10 @@ class DAMLDataset(RecDataset):
 
     def _print_preprocess_summary(self, split: str) -> None:
         vocab_size = len(self.word_to_idx)
+        embed_params = vocab_size * self.word_dim
         print(
             f"[DAML preprocess] split={split}, doc_len={self.doc_len}, "
-            f"vocab_size={vocab_size}, word_dim={self.word_dim}"
+            f"vocab_size={vocab_size}, embedding_params={embed_params}, word_dim={self.word_dim}"
         )
 
     def __len__(self) -> int:

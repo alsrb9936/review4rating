@@ -41,6 +41,7 @@ class DAML(AbstractRec):
         self.dropout_prob = self._get_float_config("dropout_prob", 0.5)
         self.l2_reg_lambda = self._get_float_config("l2_reg_lambda", 0.0)
         self.freeze_word_embedding = self._get_bool_config("freeze_word_embedding", False)
+        self.attention_chunk_size = self._get_int_config("attention_chunk_size", 64)
 
         self.num_users = int(getattr(train_dataset, "num_users"))
         self.num_items = int(getattr(train_dataset, "num_items"))
@@ -207,6 +208,38 @@ class DAML(AbstractRec):
         abs_fea = F.relu(fc(abs_fea.squeeze(2)))
         return abs_fea
 
+    def _chunked_dual_attention(
+        self,
+        user_local_fea: torch.Tensor,
+        item_local_fea: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute dual attention in chunks to avoid OOM.
+
+        Original creates a (B, filters_num, DOC_LEN, DOC_LEN) tensor which
+        explodes memory (e.g. 128 * 100 * 500 * 500 * 4 bytes = 12.8 GB).
+        This version processes user positions in chunks.
+        """
+        bs, n_filters, doc_len, _ = user_local_fea.shape
+        chunk_size = self.attention_chunk_size
+        device = user_local_fea.device
+
+        user_attention = torch.zeros(bs, doc_len, device=device)
+        item_attention = torch.zeros(bs, doc_len, device=device)
+
+        item_permuted = item_local_fea.permute(0, 1, 3, 2)  # (B, F, 1, DOC_LEN)
+
+        for start in range(0, doc_len, chunk_size):
+            end = min(start + chunk_size, doc_len)
+            user_chunk = user_local_fea[:, :, start:end, :]  # (B, F, chunk, 1)
+            # Broadcast diff: (B, F, chunk, DOC_LEN)
+            diff = user_chunk - item_permuted
+            euclidean = diff.pow(2).sum(1).sqrt()  # (B, chunk, DOC_LEN)
+            attn_chunk = 1.0 / (1.0 + euclidean)
+            user_attention[:, start:end] = attn_chunk.sum(dim=2)  # (B, chunk)
+            item_attention += attn_chunk.sum(dim=1)  # (B, DOC_LEN) accumulated
+
+        return user_attention, item_attention
+
     def forward(
         self,
         user_id: torch.Tensor,
@@ -221,14 +254,8 @@ class DAML(AbstractRec):
         user_local_fea = self.local_attention_cnn(user_word_embs, self.user_doc_cnn)
         item_local_fea = self.local_attention_cnn(item_word_embs, self.item_doc_cnn)
 
-        # Dual attention via Euclidean distance
-        # user_local_fea: (B, filters_num, DOC_LEN, 1)
-        # item_local_fea.permute(0, 1, 3, 2): (B, filters_num, 1, DOC_LEN)
-        euclidean = (user_local_fea - item_local_fea.permute(0, 1, 3, 2)).pow(2).sum(1).sqrt()
-        # (B, DOC_LEN, DOC_LEN)
-        attention_matrix = 1.0 / (1.0 + euclidean)
-        user_attention = attention_matrix.sum(2)  # (B, DOC_LEN)
-        item_attention = attention_matrix.sum(1)  # (B, DOC_LEN)
+        # Dual attention via chunked Euclidean distance to avoid OOM
+        user_attention, item_attention = self._chunked_dual_attention(user_local_fea, item_local_fea)
 
         user_doc_fea = self.local_pooling_cnn(user_local_fea, user_attention, self.user_abs_cnn, self.user_fc)
         item_doc_fea = self.local_pooling_cnn(item_local_fea, item_attention, self.item_abs_cnn, self.item_fc)
