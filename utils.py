@@ -523,6 +523,12 @@ def get_dataloader(train_df, valid_df, test_df, configs):
         train_dataset = SSGDataset(train_df, configs, split="train")
         valid_dataset = SSGDataset(valid_df, configs, split="valid", train_dataset=train_dataset)
         test_dataset = SSGDataset(test_df, configs, split="test", train_dataset=train_dataset)
+    elif model_name == "daml":
+        from data.daml_dataset import DAMLDataset
+
+        train_dataset = DAMLDataset(train_df, configs, split="train")
+        valid_dataset = DAMLDataset(valid_df, configs, split="valid", train_dataset=train_dataset)
+        test_dataset = DAMLDataset(test_df, configs, split="test", train_dataset=train_dataset)
     else:
         train_dataset = dataset_cls(train_df, configs, split="train")
         valid_dataset = dataset_cls(valid_df, configs, split="valid")

@@ -89,8 +89,14 @@ class DAMLDataset(RecDataset):
                 self.review_lookup_by_item,
             )
             self._print_preprocess_summary(split)
-        else:
-            self._setup_evaluation_from_train(train_dataset)
+        elif train_dataset is not None:
+            # valid/test with train_dataset passed: build tensors using train lookups
+            self.user_doc_tensors, self.item_doc_tensors = self._build_doc_tensors(
+                self.interactions,
+                train_dataset.review_lookup_by_user,
+                train_dataset.review_lookup_by_item,
+            )
+            self._print_preprocess_summary(split)
 
     @classmethod
     def _build_vocab_from_reviews(cls, df: pd.DataFrame) -> set[str]:
@@ -238,17 +244,32 @@ class DAMLDataset(RecDataset):
 
         return torch.stack(user_docs), torch.stack(item_docs)
 
-    def _setup_evaluation_from_train(self, train_dataset: DAMLDataset | None) -> None:
-        if self.split not in {"valid", "test"} or train_dataset is None:
+    def _setup_evaluation(self, train_df: pd.DataFrame, valid_df: pd.DataFrame, test_df: pd.DataFrame) -> None:
+        if self.split not in {"valid", "test"}:
             return
+
+        # Rebuild train interactions from train_df to construct review lookups
+        history_interactions: List[Tuple[int, int, str]] = []
+        for row in train_df.itertuples(index=False):
+            review_text = self._normalize_text(getattr(row, "reviewText", ""))
+            history_interactions.append(
+                (
+                    int(getattr(row, "user_id")),
+                    int(getattr(row, "item_id")),
+                    review_text,
+                )
+            )
+
+        review_lookup_by_user = self._build_review_lookups(history_interactions, use_user_key=True)
+        review_lookup_by_item = self._build_review_lookups(history_interactions, use_user_key=False)
 
         (
             self.user_doc_tensors,
             self.item_doc_tensors,
         ) = self._build_doc_tensors(
             self.interactions,
-            train_dataset.review_lookup_by_user,
-            train_dataset.review_lookup_by_item,
+            review_lookup_by_user,
+            review_lookup_by_item,
         )
         self._print_preprocess_summary(self.split)
 
