@@ -24,6 +24,7 @@ class IARDRMDataset(RecDataset):
         self.history_top_k = int(configs.get("history_top_k", 10))
         if self.history_top_k <= 0:
             raise ValueError("history_top_k must be positive.")
+        self.retain_rui = bool(configs.get("retain_rui", False))
         self.has_timestamp = "timestamp" in df.columns
         self.user_ids = torch.as_tensor(df["user_id"].to_numpy(dtype=np.int64), dtype=torch.long)
         self.item_ids = torch.as_tensor(df["item_id"].to_numpy(dtype=np.int64), dtype=torch.long)
@@ -50,9 +51,14 @@ class IARDRMDataset(RecDataset):
                 ) = self._build_history_review_embeddings(
                     target_interactions=self.interactions,
                     history_interactions=self.interactions,
-                    exclude_target=True,
+                    exclude_target=not self.retain_rui,
                 )
                 self.history_context_ready = True
+                print(
+                    f"IARD-RM train history context: source=train, encoder={self.history_encoder}, "
+                    f"top_k={self.history_top_k}, retain_rui={self.retain_rui}, "
+                    f"target_review_used={self.retain_rui}"
+                )
             else:
                 self.review_emb = torch.zeros((len(self.interactions), int(configs["d_text"])), dtype=torch.float32)
                 self.empty_history_mask = torch.ones(len(self.interactions), dtype=torch.bool)

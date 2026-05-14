@@ -8,8 +8,9 @@ model:
   review_context_mode: "history"
   history_aggregation: "mean"
   history_encoder: "mean"
-  history_top_k: 10
+  history_top_k: 50
   history_temporal: false
+  retain_rui: false
   d_model: 128
   num_layers: 1
   num_intents: 5

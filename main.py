@@ -120,6 +120,7 @@ def args_parser():
     parser.add_argument("--disentangler_mode", type=str, default=None, choices=["conditioned", "independent"])
     parser.add_argument("--history_encoder", type=str, default=None, choices=["mean", "attention"])
     parser.add_argument("--history_top_k", type=int, default=None)
+    parser.add_argument("--retain_rui", type=str_to_bool, default=None)
     parser.add_argument("--lambda_align", type=float, default=None)
     parser.add_argument("--lambda_sep", type=float, default=None)
     parser.add_argument("--lambda_recon", type=float, default=None)
@@ -293,6 +294,7 @@ def eval_mode(args):
         'disentangler_mode': getattr(args, 'disentangler_mode', None),
         'history_encoder': getattr(args, 'history_encoder', None),
         'history_top_k': getattr(args, 'history_top_k', None),
+        'retain_rui': getattr(args, 'retain_rui', None),
         'lambda_align': getattr(args, 'lambda_align', None),
         'lambda_sep': getattr(args, 'lambda_sep', None),
         'lambda_recon': getattr(args, 'lambda_recon', None),
@@ -373,6 +375,7 @@ def main():
         'disentangler_mode': args.disentangler_mode,
         'history_encoder': args.history_encoder,
         'history_top_k': args.history_top_k,
+        'retain_rui': args.retain_rui,
         'lambda_align': args.lambda_align,
         'lambda_sep': args.lambda_sep,
         'lambda_recon': args.lambda_recon,

@@ -72,6 +72,7 @@ class Config(dict[str, Any]):
             "history_encoder",
             "history_top_k",
             "history_temporal",
+            "retain_rui",
             "d_model",
             "num_intents",
             "eta",
