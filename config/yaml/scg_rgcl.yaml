@@ -1,0 +1,56 @@
+# SCG-RGCL Configuration
+# Sentiment-Calibrated Gated Propagation over the RGCL backbone.
+
+model:
+  name: "scg_rgcl"
+
+  # RGCL backbone settings
+  embedding_size: 64
+  num_layers: 1
+  dropout: 0.7
+  node_dropout: 0.8
+  review_dim: 384
+  use_review: true
+  symm: true
+  use_contrastive: true
+  nd_weight: 0.3
+  ed_weight: 1.0
+  classification: true
+
+  # Sentiment-Calibrated Gated Propagation
+  use_sentiment_gate: true
+  sentiment_gate_type: "calibrated_sigmoid"
+  min_gate: 0.15
+  gate_beta0_init: 2.0
+  gate_beta1_init: 4.0
+  learnable_gate: true
+  use_sentiment_confidence: true
+  calibrate_sentiment_to_rating: true
+  use_raw_sentiment_distance: false
+  sentiment_label_col: null
+  sentiment_prob_cols: null
+  log_gate_stats: true
+
+training:
+  batch: 1
+  eval_batch: 1
+  epoch: 400
+  lr: 0.01
+  weight_decay: 0.0
+  early_stop_patience: 50
+  grad_clip: 1.0
+  eval_step: 1
+
+evaluation:
+  best_metric_name: "rmse"
+  metrics: ["rmse", "mse", "mae"]
+  eval_clip: false
+
+data:
+  use_cached_graphs: true
+  use_review_text: false
+  use_review_embedding: true
+  compute_review_embedding: true
+  use_sentiment: true
+  sentiment_mode: 5
+  use_bert_whitening: false

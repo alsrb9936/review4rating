@@ -6,7 +6,6 @@ from typing import Union, cast, final
 from .abstract import AbstractRec
 
 
-@final
 class FactorizationMachine(nn.Module):
     def __init__(self, input_dim: int, fm_k: int) -> None:
         super().__init__()
@@ -24,7 +23,6 @@ class FactorizationMachine(nn.Module):
         return cast(torch.Tensor, linear_part + interaction)
 
 
-@final
 class DeepCoNN(AbstractRec):
     def __init__(self, configs: Mapping[str, object], train_dataset: object) -> None:
         super().__init__()

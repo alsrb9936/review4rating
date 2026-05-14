@@ -14,14 +14,31 @@ from data.process.sentiment_anlysis import predict_sentiments, map_rating_to_sen
 from sklearn.model_selection import train_test_split
 
 
-def _build_sentiment_features(inter_df, review_sentiments, review_scores):
+def _build_sentiment_features(inter_df, review_sentiments, review_scores, sentiment_mode=3):
     inter_df["review_score"] = review_scores
     inter_df["review_sentiment"] = review_sentiments
-    inter_df["rating_sentiment"] = inter_df["rating"].apply(map_rating_to_sentiment)
+    inter_df["rating_sentiment"] = inter_df["rating"].apply(lambda rating: map_rating_to_sentiment(rating, sentiment_mode))
     inter_df["is_consistent"] = inter_df.apply(
-        lambda row: check_consistency(row["review_sentiment"], row["rating_sentiment"], row["rating"]),
+        lambda row: check_consistency(row["review_sentiment"], row["rating_sentiment"], row["rating"], sentiment_mode),
         axis=1,
     )
+
+
+def _select_sentiment_model(configs):
+    sentiment_mode = configs.get("sentiment_mode")
+    if sentiment_mode == 5:
+        return configs.get("sentiment_model_5", configs.get("sentiment_model", "cardiffnlp/twitter-roberta-large-topic-sentiment-latest"))
+    if sentiment_mode == 3:
+        return configs.get("sentiment_model_2", configs.get("sentiment_model", "cardiffnlp/twitter-roberta-base-sentiment-latest"))
+    return configs.get("sentiment_model_2", configs.get("sentiment_model", "cardiffnlp/twitter-roberta-base-sentiment-latest"))
+
+
+def _sentiment_cache_path(configs, dataset, sentiment_model):
+    sentiment_mode = configs.get("sentiment_mode")
+    model_basename = str(sentiment_model).split("/")[-1]
+    if sentiment_mode in {3, 5}:
+        return f"{configs['sentiment_path']}/{dataset}/{sentiment_mode}class_{model_basename}.pt"
+    return f"{configs['sentiment_path']}/{dataset}/{model_basename}.pt"
 
 
 def _load_cached_review_embeddings(path):
@@ -226,7 +243,8 @@ def load_interaction_data(configs):
     path = configs["data_path"]
     gpu_id = configs.get('gpu', 0)
     model_name = configs['language_model']
-    sentiment_model = configs['sentiment_model']
+    sentiment_model = _select_sentiment_model(configs)
+    sentiment_mode = int(configs.get("sentiment_mode", 3) or 3)
     dataset = configs['dataset']
 
     use_review_text = bool(configs.get("use_review_text", False))
@@ -327,9 +345,10 @@ def load_interaction_data(configs):
         print("Skipping review embeddings (use_review_embedding=False, use_bert_whitening=False)")
 
     if use_sentiment:
-        print("Get sentiment from review...")
-        sentiment_path = f"{configs['sentiment_path']}/{dataset}/{sentiment_model.split('/')[-1]}.pt"
+        print(f"Get sentiment from review (mode={sentiment_mode}-class)...")
+        sentiment_path = _sentiment_cache_path(configs, dataset, sentiment_model)
         if os.path.exists(sentiment_path):
+            print(f"Load cached sentiment from {sentiment_path}")
             cached_sentiment = torch.load(sentiment_path, map_location="cpu")
             review_scores: Any
             if isinstance(cached_sentiment, dict):
@@ -345,19 +364,26 @@ def load_interaction_data(configs):
                 )
 
             if review_scores is None:
-                review_scores = [[0.0, 0.0, 0.0] for _ in range(len(inter_df))]
+                review_scores = [[0.0] * sentiment_mode for _ in range(len(inter_df))]
             elif len(review_scores) != len(inter_df):
                 raise ValueError(
                     f"Cached sentiment scores length {len(review_scores)} != inter_df length {len(inter_df)}"
                 )
         else:
-            review_sentiments = ["neutral"] * len(inter_df)
-            review_scores: list[list[object]] = [[0.0, 0.0, 0.0] for _ in range(len(inter_df))]
+            default_sentiment = "3" if sentiment_mode == 5 else "neutral"
+            review_sentiments = [default_sentiment] * len(inter_df)
+            review_scores: list[list[object]] = [[0.0] * sentiment_mode for _ in range(len(inter_df))]
 
             non_empty_idx = [i for i, text in enumerate(inter_df["reviewText"].tolist()) if text]
             if non_empty_idx:
                 non_empty_texts = [inter_df.iloc[i]["reviewText"] for i in non_empty_idx]
-                predicted, scores = predict_sentiments(sentiment_model, non_empty_texts, batch_size=32, gpu_id=gpu_id)
+                predicted, scores = predict_sentiments(
+                    sentiment_model,
+                    non_empty_texts,
+                    batch_size=32 if sentiment_mode == 3 else 4,
+                    gpu_id=gpu_id,
+                    num_classes=sentiment_mode,
+                )
                 for idx, sentiment, score in zip(non_empty_idx, predicted, scores):
                     review_sentiments[idx] = sentiment
                     review_scores[idx] = list(score)
@@ -370,7 +396,7 @@ def load_interaction_data(configs):
                 sentiment_path,
             )
 
-        _build_sentiment_features(inter_df, review_sentiments, review_scores)
+        _build_sentiment_features(inter_df, review_sentiments, review_scores, sentiment_mode=sentiment_mode)
     else:
         print("Skipping sentiment features (use_sentiment=False)")
 
@@ -570,6 +596,11 @@ def get_dataloader(train_df, valid_df, test_df, configs):
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=rgcl_collate_fn)
         valid_dataloader = DataLoader(valid_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=rgcl_collate_fn)
         test_dataloader = DataLoader(test_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=rgcl_collate_fn)
+    elif model_name == 'scg_rgcl':
+        from data.scg_rgcl_dataset import scg_rgcl_collate_fn
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=scg_rgcl_collate_fn)
+        valid_dataloader = DataLoader(valid_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=scg_rgcl_collate_fn)
+        test_dataloader = DataLoader(test_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=scg_rgcl_collate_fn)
     elif model_name == 'sgdn':
         from data.sgdn_dataset import sgdn_collate_fn
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=sgdn_collate_fn)

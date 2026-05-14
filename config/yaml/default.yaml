@@ -23,7 +23,10 @@ data:
   other_path: "/home/infolab/mnt/mingyu/review_rec/cached/others"
   embedding_path: "/home/infolab/mnt/mingyu/review_rec/cached/embedding"
   sentiment_path: "/home/infolab/mnt/mingyu/review_rec/cached/sentiment"
-  sentiment_model: "cardiffnlp/twitter-roberta-base-sentiment-latest"
+  sentiment_model: "cardiffnlp/twitter-roberta-large-topic-sentiment-latest"
+  sentiment_model_2: "cardiffnlp/twitter-roberta-base-sentiment-latest"
+  sentiment_model_5: "cardiffnlp/twitter-roberta-large-topic-sentiment-latest"
+  sentiment_mode: null
   language_model: "sentence-transformers/all-MiniLM-L12-v2"
   use_review_text: false
   use_review_embedding: false

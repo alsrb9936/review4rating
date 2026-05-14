@@ -1,0 +1,82 @@
+training:
+  batch: 1
+  eval_batch: 1
+  epoch: 400
+  lr: 0.01
+  weight_decay: 0.0
+  early_stop_patience: 50
+  grad_clip: 1.0
+  eval_step: 1
+evaluation:
+  eval_step: 1
+  early_stop_patience: 10
+  best_metric_name: rmse
+  eval_clip: false
+  drop_cold_start_eval: true
+  min_rating: 1.0
+  max_rating: 5.0
+  metrics:
+  - rmse
+  - mse
+  - mae
+model:
+  embedding_size: 64
+  dropout_prob: 0.1
+  name: rgcl
+  num_layers: 1
+  dropout: 0.7
+  node_dropout: 0.8
+  review_dim: 384
+  use_review: true
+  symm: true
+  use_contrastive: true
+  nd_weight: 0.3
+  ed_weight: 1.0
+  classification: true
+data:
+  data_path: /home/infolab/mnt/mingyu/review_rec/dataset
+  other_path: /home/infolab/mnt/mingyu/review_rec/cached/others
+  embedding_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding
+  sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
+  sentiment_model: cardiffnlp/twitter-roberta-large-topic-sentiment-latest
+  sentiment_model_2: cardiffnlp/twitter-roberta-base-sentiment-latest
+  sentiment_model_5: cardiffnlp/twitter-roberta-large-topic-sentiment-latest
+  sentiment_mode: null
+  language_model: sentence-transformers/all-MiniLM-L12-v2
+  use_review_text: false
+  use_review_embedding: true
+  compute_review_embedding: true
+  use_sentiment: false
+  review_emb_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding/Amazon_Musical_Instruments_14/all-MiniLM-L12-v2.pt
+  use_bert_whitening: false
+  bert_whitening_model: bert-base-uncased
+  bert_whitening_dim: 64
+  bert_whitening_pooling: cls
+  bert_whitening_normalize: true
+  bert_whitening_cache_scope: full
+  bert_whitening_stats_path: null
+  use_cached_graphs: true
+use_cached_graphs: true
+gpu: 0
+seed: 42
+split_protocol: reviewgraph
+dataset: Amazon_Musical_Instruments_14
+basemodel: rgcl
+result_path: results/rgcl_42_Amazon_Musical_Instruments_14_20260515_033954_435170
+cold_start_eval_summary:
+  valid:
+    num_samples_before: 1026
+    cold_user_count: 0
+    cold_item_count: 0
+    cold_interaction_count: 0
+    removed_count: 0
+    num_samples_after: 1026
+  test:
+    num_samples_before: 1026
+    cold_user_count: 0
+    cold_item_count: 0
+    cold_interaction_count: 0
+    removed_count: 0
+    num_samples_after: 1026
+num_users: 1429
+num_items: 900

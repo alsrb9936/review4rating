@@ -25,7 +25,7 @@ def str_to_bool(value):
 
 def apply_iard_loss_preset(configs):
     model_name = configs.get('basemodel') or configs.get('model', {}).get('name')
-    if model_name != 'iard_rm':
+    if model_name not in {'iard_rm', 'iarm_rm_senti'}:
         return
 
     preset = configs.get('loss_preset', 'full_iard')
@@ -40,6 +40,8 @@ def apply_iard_loss_preset(configs):
         'lambda_recon': 0.1,
         'lambda_gate': 0.001,
         'lambda_proto': 0.01,
+        'lambda_gate_anchor': 0.0,
+        'use_q_agree_for_align': False,
     }
 
     preset_overrides = {
@@ -82,6 +84,11 @@ def apply_iard_loss_preset(configs):
             **full_defaults,
             'fixed_gate_value': 0.5,
         },
+        'full_iard_anchor': {
+            **full_defaults,
+            'lambda_gate_anchor': 0.1,
+            'use_q_agree_for_align': True,
+        },
     }
 
     if preset not in preset_overrides:
@@ -106,11 +113,13 @@ def args_parser():
     parser.add_argument("--gpu", type=int, default=0, help="GPU ID")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--mode", type=str, default="train", help="train or eval")
+    parser.add_argument("--split_protocol", type=str, default=None, choices=["default", "reviewgraph"], help="Data split protocol")
     parser.add_argument("--result_path", type=str, default=None, help="Path to results folder (for eval mode)")
     parser.add_argument("--batch", type=int, default=None)
     parser.add_argument("--epoch", type=int, default=None)
     parser.add_argument("--eval_batch", type=int, default=None)
     parser.add_argument("--eval_step", type=int, default=None, help="Evaluation every N epochs")
+    parser.add_argument("--sentiment_mode", type=int, default=None, choices=[3, 5], help="Sentiment classification mode: 3 or 5")
     parser.add_argument("--drop_cold_start_eval", type=str_to_bool, default=None, help="Drop valid/test rows with users/items unseen in train")
     parser.add_argument("--loss_preset", type=str, default=None)
     parser.add_argument("--eta", type=float, default=None)
@@ -126,6 +135,8 @@ def args_parser():
     parser.add_argument("--lambda_recon", type=float, default=None)
     parser.add_argument("--lambda_gate", type=float, default=None)
     parser.add_argument("--lambda_proto", type=float, default=None)
+    parser.add_argument("--lambda_gate_anchor", type=float, default=None)
+    parser.add_argument("--use_q_agree_for_align", type=str_to_bool, default=None)
     parser.add_argument("--weight_decay", type=float, default=None)
     parser.add_argument("--dropout", type=float, default=None)
     parser.add_argument("--d_model", type=int, default=None)
@@ -292,6 +303,7 @@ def eval_mode(args):
     if args.drop_cold_start_eval is not None:
         configs['drop_cold_start_eval'] = args.drop_cold_start_eval
     iard_cli_overrides = {
+        'sentiment_mode': getattr(args, 'sentiment_mode', None),
         'loss_preset': getattr(args, 'loss_preset', None),
         'eta': getattr(args, 'eta', None),
         'shared_fusion_scale': getattr(args, 'shared_fusion_scale', None),
@@ -306,6 +318,8 @@ def eval_mode(args):
         'lambda_recon': getattr(args, 'lambda_recon', None),
         'lambda_gate': getattr(args, 'lambda_gate', None),
         'lambda_proto': getattr(args, 'lambda_proto', None),
+        'lambda_gate_anchor': getattr(args, 'lambda_gate_anchor', None),
+        'use_q_agree_for_align': getattr(args, 'use_q_agree_for_align', None),
     }
     provided_iard_keys = [key for key, value in iard_cli_overrides.items() if value is not None]
     if provided_iard_keys:
@@ -372,7 +386,9 @@ def main():
         'eval_step': args.eval_step,
         'gpu': args.gpu,
         'seed': args.seed,
+        'split_protocol': args.split_protocol,
         'drop_cold_start_eval': args.drop_cold_start_eval,
+        'sentiment_mode': args.sentiment_mode,
         'loss_preset': args.loss_preset,
         'eta': args.eta,
         'shared_fusion_scale': args.shared_fusion_scale,
@@ -387,6 +403,8 @@ def main():
         'lambda_recon': args.lambda_recon,
         'lambda_gate': args.lambda_gate,
         'lambda_proto': args.lambda_proto,
+        'lambda_gate_anchor': args.lambda_gate_anchor,
+        'use_q_agree_for_align': args.use_q_agree_for_align,
         'weight_decay': args.weight_decay,
         'dropout': args.dropout,
         'd_model': args.d_model,
@@ -407,6 +425,8 @@ def main():
             'lambda_recon',
             'lambda_gate',
             'lambda_proto',
+            'lambda_gate_anchor',
+            'use_q_agree_for_align',
         )
         if cli_overrides.get(key) is not None
     ]

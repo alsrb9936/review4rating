@@ -3,7 +3,9 @@ from .deepconn import DeepCoNN
 from .narre import NARRE
 from .ssg import SSG
 from .rgcl import RGCL
+from .scg_rgcl import SCG_RGCL
 from .iard_rm import IARDRM
+from .iarm_rm_senti import IARMRMSenti
 from .sgdn import SGDN
 from .daml import DAML
 
@@ -14,7 +16,9 @@ MODEL_DICT = {
     "narre": NARRE,
     "ssg": SSG,
     "rgcl": RGCL,
+    "scg_rgcl": SCG_RGCL,
     "iard_rm": IARDRM,
+    "iarm_rm_senti": IARMRMSenti,
     "sgdn": SGDN,
     "daml": DAML,
 }

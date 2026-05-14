@@ -96,6 +96,8 @@ class Config(dict[str, Any]):
             "eps",
             "detach_gate_for_align",
             "detach_zx_for_recon",
+            "lambda_gate_anchor",
+            "use_q_agree_for_align",
         },
         "data": {
             "data_path",
@@ -103,6 +105,9 @@ class Config(dict[str, Any]):
             "embedding_path",
             "sentiment_path",
             "sentiment_model",
+            "sentiment_model_2",
+            "sentiment_model_5",
+            "sentiment_mode",
             "language_model",
             "use_review_text",
             "use_review_embedding",
