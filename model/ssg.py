@@ -1,787 +1,522 @@
-# pyright: reportAny=false, reportArgumentType=false, reportDeprecated=false, reportImplicitOverride=false, reportIncompatibleMethodOverride=false, reportUnannotatedClassAttribute=false, reportUninitializedInstanceVariable=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false, reportUnknownVariableType=false, reportUnnecessaryCast=false, reportUnnecessaryComparison=false, reportUnusedCallResult=false, reportUnusedVariable=false
+from __future__ import annotations
+
+# pyright: reportAny=false, reportArgumentType=false, reportImplicitOverride=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
 
 from collections.abc import Mapping, Sequence
-from typing import Dict, List, Optional, Tuple, Union, cast
+from typing import cast
 
+import os
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.parameter import Parameter
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from .abstract import AbstractRec
+
+
+def decov(x: torch.Tensor, y: torch.Tensor, diag: bool = False) -> torch.Tensor:
+    bsz = x.size(0)
+    x_centered = x - torch.mean(x, dim=0)[None, :]
+    y_centered = y - torch.mean(y, dim=0)[None, :]
+    mat = x_centered.t().mm(y_centered) / bsz
+    loss = 0.5 * torch.norm(mat, p="fro") ** 2
+    if diag:
+        loss = loss - 0.5 * torch.norm(torch.diag(mat)) ** 2
+    return cast(torch.Tensor, loss)
+
+
+class TextCNN(nn.Module):
+    def __init__(self, seq_len: int, vocab_size: int, emb_size: int, filter_sizes: Sequence[int], num_filters: int) -> None:
+        super().__init__()
+        self.seq_len = seq_len
+        self.vocab_size = vocab_size
+        self.emb_size = emb_size
+        self.filter_sizes = list(filter_sizes)
+        self.num_filter_sizes = len(self.filter_sizes)
+        self.num_filters = num_filters
+        self.rembedding = nn.Embedding(vocab_size, emb_size)
+        self.cnns = nn.ModuleList()
+        self.pools = nn.ModuleList()
+        for size in self.filter_sizes:
+            self.cnns.append(nn.Conv2d(1, num_filters, kernel_size=(size, emb_size)))
+            self.pools.append(nn.MaxPool2d(kernel_size=(seq_len - size + 1, 1), stride=(1, 1)))
+        self.out_dim = self.num_filters * self.num_filter_sizes
+        self.init_weights()
+
+    def init_weights(self) -> None:
+        nn.init.uniform_(self.rembedding.weight, -0.1, 0.1)
+        for conv in self.cnns:
+            nn.init.uniform_(conv.weight, -0.1, 0.1)
+            nn.init.constant_(conv.bias, 0.1)
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        inputs = self.rembedding(inputs)
+        pooled_out = []
+        for idx in range(self.num_filter_sizes):
+            h = F.relu(self.cnns[idx](inputs.view(-1, 1, self.seq_len, self.emb_size).contiguous()))
+            pooled_out.append(self.pools[idx](h))
+        return cast(torch.Tensor, torch.cat(pooled_out, 3).view(-1, self.num_filters * self.num_filter_sizes))
+
+
+class TimeAttn(nn.Module):
+    def __init__(self, dim: int, time_dim: int, beta: float, max_rel: int) -> None:
+        super().__init__()
+        self.beta = beta
+        self.temperature = float(np.sqrt(dim * 1.0))
+        vocab_size = max(150, max_rel + 1)
+        self.pos_emb = nn.Embedding(vocab_size, time_dim)
+        self.rel_emb = nn.Embedding(vocab_size, time_dim)
+        self.fc_k = nn.Linear(dim, dim, bias=False)
+        self.fc_q = nn.Linear(dim, dim, bias=False)
+        self.fc_rp = nn.Linear(2 * time_dim, 1, bias=False)
+        self.rate = nn.Parameter(torch.ones(1))
+        self.init_weights()
+
+    def init_weights(self) -> None:
+        nn.init.uniform_(self.pos_emb.weight, -0.1, 0.1)
+        nn.init.uniform_(self.rel_emb.weight, -0.1, 0.1)
+        nn.init.uniform_(self.fc_k.weight, -0.1, 0.1)
+        nn.init.uniform_(self.fc_q.weight, -0.1, 0.1)
+        nn.init.uniform_(self.fc_rp.weight, -0.1, 0.1)
+
+    def forward(self, out: torch.Tensor, hn: torch.Tensor, pos_ind: torch.Tensor, rel_dt: torch.Tensor, abs_dt: torch.Tensor) -> torch.Tensor:
+        del abs_dt
+        pad_mask = pos_ind == 0
+        pos_emb = self.pos_emb(pos_ind.clamp(min=0, max=self.pos_emb.num_embeddings - 1))
+        rel_emb = self.rel_emb(rel_dt.clamp(min=0, max=self.rel_emb.num_embeddings - 1))
+        attn_k = self.fc_k(out)
+        attn_q = self.fc_q(hn)
+        attn_0 = torch.bmm(attn_k, attn_q.unsqueeze(-1)).squeeze(-1) / self.temperature
+        attn_1 = self.fc_rp(torch.cat([rel_emb, pos_emb], -1)).squeeze(-1)
+        attn = attn_0 + self.beta * attn_1
+        attn = attn.masked_fill(pad_mask, torch.finfo(attn.dtype).min)
+        attn = F.softmax(attn, 1)
+        attn = torch.where(torch.isfinite(attn), attn, torch.zeros_like(attn))
+        return cast(torch.Tensor, torch.bmm(attn.unsqueeze(1), out).squeeze(1))
+
+
+class GRUModule(nn.Module):
+    def __init__(self, input_dim: int, gru_dim: int, time_dim: int, beta: float, max_rel: int) -> None:
+        super().__init__()
+        self.gru = nn.GRU(input_dim, gru_dim, batch_first=True)
+        self.attention = TimeAttn(gru_dim, time_dim, beta, max_rel)
+
+    def forward(self, inputs: torch.Tensor, length: torch.Tensor, pos_ind: torch.Tensor, rel_dt: torch.Tensor, abs_dt: torch.Tensor) -> torch.Tensor:
+        safe_length = length.clamp(min=1, max=inputs.size(1))
+        sorted_len, sorted_idx = safe_length.sort(0, descending=True)
+        index_sorted_idx = sorted_idx.view(-1, 1, 1).expand_as(inputs)
+        sorted_inputs = inputs.gather(0, index_sorted_idx.long())
+        packed = pack_padded_sequence(sorted_inputs, sorted_len.detach().cpu(), batch_first=True)
+        out, hn = self.gru(packed)
+        hn = torch.squeeze(hn, 0)
+        out, _ = pad_packed_sequence(out, batch_first=True, total_length=inputs.size(1))
+        _, ori_idx = sorted_idx.sort(0, descending=False)
+        hn = hn.gather(0, ori_idx.view(-1, 1).expand_as(hn).long())
+        out = out.gather(0, ori_idx.view(-1, 1, 1).expand_as(out).long())
+        return self.attention(out, hn, pos_ind, rel_dt, abs_dt)
+
+
+class SpecialSpmmFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, indices: torch.Tensor, values: torch.Tensor, shape: torch.Size, b: torch.Tensor) -> torch.Tensor:
+        assert indices.requires_grad is False
+        a = torch.sparse_coo_tensor(indices, values, shape, device=values.device)
+        ctx.save_for_backward(a, b)
+        ctx.N = shape[0]
+        return torch.matmul(a, b)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[None, torch.Tensor | None, None, torch.Tensor | None]:
+        a, b = ctx.saved_tensors
+        grad_values = None
+        grad_b = None
+        if ctx.needs_input_grad[1]:
+            grad_a_dense = grad_output.matmul(b.t())
+            edge_idx = a._indices()[0, :] * ctx.N + a._indices()[1, :]
+            grad_values = grad_a_dense.view(-1)[edge_idx]
+        if ctx.needs_input_grad[3]:
+            grad_b = a.t().matmul(grad_output)
+        return None, grad_values, None, grad_b
+
+
+class SpecialSpmm(nn.Module):
+    def forward(self, indices: torch.Tensor, values: torch.Tensor, shape: torch.Size, b: torch.Tensor) -> torch.Tensor:
+        return SpecialSpmmFunction.apply(indices, values, shape, b)
+
+
+class SpGraphAttentionLayer(nn.Module):
+    def __init__(self, in_features: int, out_features: int, emb_size: int, max_rating: int, att_dim: int, dropout: float, alpha: float, concat: bool = True) -> None:
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.alpha = alpha
+        self.concat = concat
+        self.W = nn.Parameter(torch.zeros(size=(in_features, out_features)))
+        self.a = nn.Parameter(torch.zeros(size=(1, 2 * (out_features + att_dim))))
+        self.re_W = nn.Parameter(torch.zeros(size=(emb_size, att_dim)))
+        self.ra_W = nn.Parameter(torch.zeros(size=(max_rating, att_dim)))
+        self.dropout = nn.Dropout(dropout)
+        self.leakyrelu = nn.LeakyReLU(self.alpha)
+        self.special_spmm = SpecialSpmm()
+        self.init_weights()
+
+    def init_weights(self) -> None:
+        nn.init.uniform_(self.W, -0.1, 0.1)
+        nn.init.uniform_(self.a, -0.1, 0.1)
+        nn.init.uniform_(self.re_W, -0.1, 0.1)
+        nn.init.uniform_(self.ra_W, -0.1, 0.1)
+
+    def forward(self, inputs: torch.Tensor, adj: torch.Tensor, review: torch.Tensor, rating: torch.Tensor) -> torch.Tensor:
+        device = inputs.device
+        node_count = inputs.size(0)
+        edge = adj.nonzero().t()
+        h = torch.mm(inputs, self.W)
+        if edge.size(1) == 0:
+            return F.elu(h) if self.concat else h
+        re_h = torch.mm(review, self.re_W)
+        ra_h = torch.mm(rating, self.ra_W)
+        edge_h = torch.cat((h[edge[0, :], :], h[edge[1, :], :], re_h, ra_h), dim=1).t()
+        edge_e = torch.exp(self.leakyrelu(self.a.mm(edge_h).squeeze()))
+        e_rowsum = self.special_spmm(edge, edge_e, torch.Size([node_count, node_count]), torch.ones(size=(node_count, 1), device=device))
+        e_rowsum = e_rowsum + 1e-10
+        edge_e = self.dropout(edge_e)
+        h_prime = self.special_spmm(edge, edge_e, torch.Size([node_count, node_count]), h)
+        h_prime = h_prime.div(e_rowsum)
+        h_prime = h_prime + h
+        return F.elu(h_prime) if self.concat else h_prime
+
+
+class GraphModel(nn.Module):
+    def __init__(self, input_size: int, node_num: int, node_emb: int, hid_dim: int, n_hops: int, max_rating: int, att_dim: int, n_heads: int, alpha: float, keep_prob: float) -> None:
+        super().__init__()
+        self.node_embedding = nn.Embedding(node_num, node_emb)
+        self.attentions = nn.ModuleList()
+        self.n_hops = n_hops
+        for hop_idx in range(n_hops - 1):
+            heads = nn.ModuleList()
+            in_feat = node_emb if hop_idx == 0 else hid_dim * n_heads
+            for _ in range(n_heads):
+                heads.append(SpGraphAttentionLayer(in_feat, hid_dim, input_size, max_rating, att_dim, 1.0 - keep_prob, alpha, concat=True))
+            self.attentions.append(heads)
+        self.out_att = SpGraphAttentionLayer(hid_dim * n_heads if n_hops > 1 else node_emb, hid_dim, input_size, max_rating, att_dim, 1.0 - keep_prob, alpha, concat=False)
+        self.init_weights()
+
+    def init_weights(self) -> None:
+        nn.init.uniform_(self.node_embedding.weight, -0.1, 0.1)
+
+    def forward(self, nodes: torch.Tensor, edge_emb: torch.Tensor, ratings: torch.Tensor, adj: torch.Tensor, pairs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        h = self.node_embedding(nodes)
+        for hop_idx in range(self.n_hops - 1):
+            h = torch.cat([att(h, adj, edge_emb, ratings) for att in self.attentions[hop_idx]], dim=1)
+        out = self.out_att(h, adj, edge_emb, ratings)
+        return out[pairs[:, 0]], out[pairs[:, 1]]
 
 
 class SSG(AbstractRec):
     def __init__(self, configs: Mapping[str, object], train_dataset: object) -> None:
         super().__init__()
         self.configs = configs
-        self.train_dataset = train_dataset
-
-        self.review_length = self._get_int_config("review_length", 40)
-        self.review_count = self._get_int_config("review_count", 10)
-        self.seq_count = self._get_int_config("seq_count", 10)
-        self.word_dim = self._get_int_config("word_dim", 300)
-        self.filter_sizes = self._get_int_list_config("filter_sizes", [3])
-        self.num_filters = self._get_int_config("num_filters", 100)
-        self.id_dim = self._get_int_config("id_dim", 32)
-        self.attention_size = self._get_int_config("attention_size", 32)
-        self.gru_dim = self._get_int_config("gru_dim", 100)
-        self.time_dim = self._get_int_config("time_dim", 32)
-        self.latent_dim = self._get_int_config("latent_dim", 32)
-        self.review_dim = self._get_int_config("review_dim", self._get_int_config("bert_whitening_dim", 64))
-        self.review_input_mode = str(self.configs.get("review_input_mode", "token"))
-        if self.review_input_mode not in {"token", "embedding"}:
-            raise ValueError("review_input_mode must be 'token' or 'embedding'.")
-
-        preset = str(self.configs.get("ssg_preset", "custom"))
-        self.use_set_view = self._get_bool_config("use_set_view", True)
-        self.use_sequence_view = self._get_bool_config("use_sequence_view", True)
-        self.use_graph_view = self._get_bool_config("use_graph_view", False)
-        if preset == "set_only":
-            self.use_set_view, self.use_sequence_view, self.use_graph_view = True, False, False
-        elif preset == "set_sequence":
-            self.use_set_view, self.use_sequence_view, self.use_graph_view = True, True, False
-        elif preset == "set_graph":
-            self.use_set_view, self.use_sequence_view, self.use_graph_view = True, False, True
-        elif preset in {"full", "no_decov"}:
-            self.use_set_view, self.use_sequence_view, self.use_graph_view = True, True, True
-
-        self.graph_hidden_dim = self._get_int_config("graph_hidden_dim", 32)
-        self.graph_node_dim = self._get_int_config("graph_node_dim", 32)
-        self.graph_attention_dim = self._get_int_config("graph_attention_dim", 32)
-        self.n_hops = self._get_int_config("n_hops", 2)
-        self.n_heads = self._get_int_config("n_heads", 2)
-        self.alpha = self._get_float_config("alpha", 0.2)
-        self.train_clip = self._get_bool_config("train_clip", False)
-        self.test_clip = self._get_bool_config("test_clip", True)
-        self.min_rating = self._get_float_config("min_rating", 1.0)
-        self.max_rating = self._get_float_config("max_rating", 5.0)
-
-        self.dropout_prob = self._get_float_config("dropout_prob", 0.5)
-        self.decov_lambda = self._get_float_config("decov_lambda", 0.01)
-        if preset == "no_decov":
-            self.decov_lambda = 0.0
-        self.l2_lambda = self._get_float_config("l2_lambda", 0.001)
-
-        self.num_users = int(getattr(train_dataset, "num_users"))
-        self.num_items = int(getattr(train_dataset, "num_items"))
-        self.pad_idx = int(getattr(train_dataset, "pad_idx", 0))
-
-        embedding_matrix = torch.as_tensor(
-            getattr(train_dataset, "embedding_matrix"),
-            dtype=torch.float32,
-        )
-        if embedding_matrix.size(1) != self.word_dim:
-            raise ValueError(
-                "Configured word_dim={} does not match embedding dim={}".format(
-                    self.word_dim,
-                    embedding_matrix.size(1),
-                )
-            )
-        self.embedding_matrix = embedding_matrix
-
-        self.word_embedding = nn.Embedding.from_pretrained(
-            self.embedding_matrix,
-            freeze=False,
-            padding_idx=self.pad_idx,
-        )
-
-        self.cnn_out_dim = self.num_filters * len(self.filter_sizes)
-        self.user_convs = nn.ModuleList(
-            [
-                nn.Conv1d(self.word_dim, self.num_filters, kernel_size=kernel_size)
-                for kernel_size in self.filter_sizes
-            ]
-        )
-        self.item_convs = nn.ModuleList(
-            [
-                nn.Conv1d(self.word_dim, self.num_filters, kernel_size=kernel_size)
-                for kernel_size in self.filter_sizes
-            ]
-        )
-        self.user_embedding_projection = nn.Linear(self.review_dim, self.cnn_out_dim)
-        self.item_embedding_projection = nn.Linear(self.review_dim, self.cnn_out_dim)
-
-        self.user_review_fc = nn.Linear(self.cnn_out_dim, self.attention_size)
-        self.item_review_fc = nn.Linear(self.cnn_out_dim, self.attention_size)
-        self.user_id_attention_fc = nn.Linear(self.id_dim, self.attention_size)
-        self.item_id_attention_fc = nn.Linear(self.id_dim, self.attention_size)
-        self.user_attention_fc = nn.Linear(self.attention_size, 1)
-        self.item_attention_fc = nn.Linear(self.attention_size, 1)
-
-        self.user_id_embedding = nn.Embedding(self.num_users, self.id_dim)
-        self.item_id_embedding = nn.Embedding(self.num_items, self.id_dim)
-        self.user_review_item_id_embedding = nn.Embedding(
-            self.num_items + 1,
-            self.id_dim,
-            padding_idx=self.num_items,
-        )
-        self.item_review_user_id_embedding = nn.Embedding(
-            self.num_users + 1,
-            self.id_dim,
-            padding_idx=self.num_users,
-        )
-
-        self.user_gru = nn.GRU(self.cnn_out_dim, self.gru_dim, batch_first=True)
-        self.item_gru = nn.GRU(self.cnn_out_dim, self.gru_dim, batch_first=True)
-        self.max_rel_bucket = self._get_int_config("max_rel_bucket", 100)
-        self.position_embedding = nn.Embedding(max(self.seq_count + 1, self.max_rel_bucket + 1), self.time_dim)
-        self.relative_time_embedding = nn.Embedding(self.max_rel_bucket + 1, self.time_dim)
-        self.user_content_query = nn.Linear(self.gru_dim, self.gru_dim)
-        self.item_content_query = nn.Linear(self.gru_dim, self.gru_dim)
-        self.user_temporal_fc = nn.Linear(self.time_dim, 1)
-        self.item_temporal_fc = nn.Linear(self.time_dim, 1)
-        self.beta = nn.Parameter(torch.tensor(self._get_float_config("beta", 1.0), dtype=torch.float32))
-
-        self.graph_user_embedding = nn.Embedding(self.num_users, self.graph_node_dim)
-        self.graph_item_embedding = nn.Embedding(self.num_items, self.graph_node_dim)
-        self.graph_review_projection = nn.Linear(self.cnn_out_dim, self.graph_attention_dim)
-        self.graph_rating_projection = nn.Linear(5, self.graph_attention_dim)
-        self.graph_src_projection = nn.Linear(self.graph_node_dim, self.graph_attention_dim)
-        self.graph_dst_projection = nn.Linear(self.graph_node_dim, self.graph_attention_dim)
-        self.graph_attention_heads = nn.ModuleList(
-            [nn.Linear(self.graph_attention_dim, 1) for _ in range(self.n_heads)]
-        )
-        self.graph_message_projection = nn.Linear(
-            self.graph_node_dim + self.graph_attention_dim,
-            self.graph_hidden_dim,
-        )
-        self.graph_update = nn.Linear(
-            self.graph_node_dim + self.graph_hidden_dim,
-            self.graph_node_dim,
-        )
-        self.graph_output_projection = nn.Linear(self.graph_node_dim, self.graph_hidden_dim)
-
-        user_fusion_in_dim = 0
-        item_fusion_in_dim = 0
-        if self.use_set_view:
-            user_fusion_in_dim += self.cnn_out_dim
-            item_fusion_in_dim += self.cnn_out_dim
-        if self.use_sequence_view:
-            user_fusion_in_dim += self.gru_dim
-            item_fusion_in_dim += self.gru_dim
-        if self.use_graph_view:
-            user_fusion_in_dim += self.graph_hidden_dim
-            item_fusion_in_dim += self.graph_hidden_dim
-        if user_fusion_in_dim == 0 or item_fusion_in_dim == 0:
-            raise ValueError("At least one SSG view must be active.")
-
-        self.user_fusion = nn.Linear(user_fusion_in_dim, self.latent_dim)
-        self.item_fusion = nn.Linear(item_fusion_in_dim, self.latent_dim)
-        self.user_id_latent = nn.Linear(self.id_dim, self.latent_dim)
-        self.item_id_latent = nn.Linear(self.id_dim, self.latent_dim)
-
-        self.user_bias = nn.Embedding(self.num_users, 1)
-        self.item_bias = nn.Embedding(self.num_items, 1)
-        self.predict_layer = nn.Linear(self.latent_dim, 1)
-
-        ratings = getattr(train_dataset, "ratings", None)
-        if ratings is None:
-            self.global_bias = nn.Parameter(torch.zeros(1, dtype=torch.float32))
-        else:
-            ratings_tensor = torch.as_tensor(ratings, dtype=torch.float32)
-            self.global_bias = nn.Parameter(ratings_tensor.mean().view(1))
-
-        self.relu = nn.ReLU()
-        self.leaky_relu = nn.LeakyReLU(self.alpha)
-        self.dropout = nn.Dropout(self.dropout_prob)
-        self.loss_fn = nn.MSELoss()
-        self._cached_user_set = None
-        self._cached_item_set = None
-        self._cached_user_seq = None
-        self._cached_item_seq = None
-        self._cached_user_graph = None
-        self._cached_item_graph = None
+        self.review_num_u = int(getattr(train_dataset, "review_num_u"))
+        self.review_num_i = int(getattr(train_dataset, "review_num_i"))
+        self.review_len_u = int(getattr(train_dataset, "review_len_u"))
+        self.review_len_i = int(getattr(train_dataset, "review_len_i"))
+        self.review_len_g = int(getattr(train_dataset, "review_len_g", self.review_len_u))
+        self.user_num = int(getattr(train_dataset, "num_users"))
+        self.item_num = int(getattr(train_dataset, "num_items"))
+        self.node_num = self.user_num + self.item_num
+        self.filter_sizes = self._get_int_list("filter_sizes", [3])
+        self.emb_size = int(configs.get("word_dim", 300))
+        self.id_emb = int(configs.get("id_dim", 32))
+        self.att_dim = int(configs.get("attention_size", 32))
+        self.n_latent = int(configs.get("latent_dim", 8))
+        self.gru_dim = int(configs.get("gru_dim", 32))
+        self.time_dim = int(configs.get("time_dim", 32))
+        self.num_filters = int(configs.get("num_filters", 100))
+        self.keep_prob = float(configs.get("keep_prob", 1.0))
+        self.alpha = float(configs.get("alpha", 0.25))
+        self.beta = float(configs.get("beta", 1.0))
+        self.n_hops = int(configs.get("n_hops", 2))
+        self.n_heads = int(configs.get("n_heads", 8))
+        self.node_emb = int(configs.get("graph_node_dim", 128))
+        self.hid_dim = int(configs.get("graph_hidden_dim", 64))
+        self.graph_att_dim = int(configs.get("graph_attention_dim", 32))
+        self.max_rating = int(configs.get("max_rating", 5))
+        self.max_rel = int(configs.get("max_rel_bucket", 100))
+        self.decov_lambda = float(configs.get("decov_lambda", 0.01))
+        self.l2_reg_lambda = float(configs.get("l2_lambda", 1.0))
+        self.train_clip = self._get_bool("train_clip", False)
+        self.test_clip = self._get_bool("test_clip", True)
+        self.min_rating = float(configs.get("min_rating", 1.0))
+        self.max_rating_value = float(configs.get("max_rating", 5.0))
+        self.debug_shapes = self._get_bool("debug_shapes", False)
         self._shape_logged = False
 
+        self.user_vocab_size = len(getattr(train_dataset, "vocabulary_user"))
+        self.item_vocab_size = len(getattr(train_dataset, "vocabulary_item"))
+        self.graph_vocab_size = len(getattr(train_dataset, "vocabulary"))
+        self.set_dim = self.num_filters * len(self.filter_sizes)
+
+        self.user_remb = nn.Embedding(self.user_vocab_size, self.emb_size)
+        self.user_idemb_att = nn.Embedding(self.user_num + 2, self.id_emb)
+        self.item_remb = nn.Embedding(self.item_vocab_size, self.emb_size)
+        self.item_idemb_att = nn.Embedding(self.item_num + 2, self.id_emb)
+        self.idemb = nn.Embedding(self.node_num, self.n_latent)
+
+        self.user_cnns = nn.ModuleList()
+        self.user_pools = nn.ModuleList()
+        for size in self.filter_sizes:
+            self.user_cnns.append(nn.Conv2d(1, self.num_filters, kernel_size=(size, self.emb_size)))
+            self.user_pools.append(nn.MaxPool2d(kernel_size=(self.review_len_u - size + 1, 1), stride=(1, 1)))
+        self.item_cnns = nn.ModuleList()
+        self.item_pools = nn.ModuleList()
+        for size in self.filter_sizes:
+            self.item_cnns.append(nn.Conv2d(1, self.num_filters, kernel_size=(size, self.emb_size)))
+            self.item_pools.append(nn.MaxPool2d(kernel_size=(self.review_len_i - size + 1, 1), stride=(1, 1)))
+
+        self.Wau = Parameter(torch.Tensor(self.set_dim, self.att_dim))
+        self.Wru = Parameter(torch.Tensor(self.id_emb, self.att_dim))
+        self.Wpu = Parameter(torch.Tensor(self.att_dim, 1))
+        self.bau = Parameter(torch.Tensor(self.att_dim))
+        self.bbu = Parameter(torch.Tensor(1))
+        self.Wai = Parameter(torch.Tensor(self.set_dim, self.att_dim))
+        self.Wri = Parameter(torch.Tensor(self.id_emb, self.att_dim))
+        self.Wpi = Parameter(torch.Tensor(self.att_dim, 1))
+        self.bai = Parameter(torch.Tensor(self.att_dim))
+        self.bbi = Parameter(torch.Tensor(1))
+
+        self.u_dropout = nn.Dropout(1.0 - self.keep_prob)
+        self.i_dropout = nn.Dropout(1.0 - self.keep_prob)
+        self.u_gru = GRUModule(self.set_dim, self.gru_dim, self.time_dim, self.beta, self.max_rel)
+        self.i_gru = GRUModule(self.set_dim, self.gru_dim, self.time_dim, self.beta, self.max_rel)
+        self.u_fc = nn.Linear(self.set_dim + self.gru_dim + self.hid_dim, self.n_latent)
+        self.i_fc = nn.Linear(self.set_dim + self.gru_dim + self.hid_dim, self.n_latent)
+        self.fm_dropout = nn.Dropout(1.0 - self.keep_prob)
+        self.Wmul = Parameter(torch.Tensor(self.n_latent, 1))
+        self.biases = Parameter(torch.Tensor(self.node_num))
+        self.gbias = Parameter(torch.Tensor(1))
+        self.mse_loss = nn.MSELoss()
+        self.graph_cnn = TextCNN(self.review_len_g, self.graph_vocab_size, self.emb_size, self.filter_sizes, self.num_filters)
+        self.graph_view = GraphModel(self.set_dim, self.node_num, self.node_emb, self.hid_dim, self.n_hops, self.max_rating, self.graph_att_dim, self.n_heads, self.alpha, self.keep_prob)
         self.init_weights()
-
+        self._maybe_load_word2vec(train_dataset)
         total_params = sum(parameter.numel() for parameter in self.parameters())
-        trainable_params = sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)
-        print("SSG parameters: total={}, trainable={}".format(total_params, trainable_params))
+        print(f"SSG parameters: total={total_params}, trainable={sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)}")
 
-    def _get_int_config(self, key: str, default: int) -> int:
-        return int(cast(Union[int, float, str], self.configs.get(key, default)))
+    def _get_int_list(self, key: str, default: Sequence[int]) -> list[int]:
+        value = self.configs.get(key, default)
+        if isinstance(value, str):
+            return [int(part.strip()) for part in value.strip().strip("[]").split(",") if part.strip()]
+        if isinstance(value, Sequence):
+            return [int(part) for part in value]
+        return list(default)
 
-    def _get_float_config(self, key: str, default: float) -> float:
-        return float(cast(Union[int, float, str], self.configs.get(key, default)))
-
-    def _get_bool_config(self, key: str, default: bool) -> bool:
+    def _get_bool(self, key: str, default: bool) -> bool:
         value = self.configs.get(key, default)
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
-            return value.lower() in {"1", "true", "yes", "y", "on"}
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
         return bool(value)
 
-    def _get_int_list_config(self, key: str, default: Sequence[int]) -> List[int]:
-        value = self.configs.get(key, default)
-        if isinstance(value, str):
-            stripped = value.strip().strip("[]")
-            if not stripped:
-                return list(default)
-            return [int(part.strip()) for part in stripped.split(",") if part.strip()]
-        if isinstance(value, Sequence):
-            return [int(cast(Union[int, float, str], part)) for part in value]
-        return list(default)
-
     def init_weights(self) -> None:
-        for module in self.modules():
-            if isinstance(module, nn.Conv1d):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Embedding) and module is not self.word_embedding:
-                nn.init.normal_(module.weight, mean=0.0, std=0.01)
-                if module.padding_idx is not None:
-                    with torch.no_grad():
-                        module.weight[module.padding_idx].fill_(0.0)
+        nn.init.uniform_(self.user_remb.weight, -0.1, 0.1)
+        nn.init.uniform_(self.user_idemb_att.weight, -0.1, 0.1)
+        nn.init.uniform_(self.item_remb.weight, -0.1, 0.1)
+        nn.init.uniform_(self.item_idemb_att.weight, -0.1, 0.1)
+        nn.init.uniform_(self.idemb.weight, -0.1, 0.1)
+        for conv in self.user_cnns:
+            nn.init.uniform_(conv.weight, -0.1, 0.1)
+            nn.init.constant_(conv.bias, 0.1)
+        for conv in self.item_cnns:
+            nn.init.uniform_(conv.weight, -0.1, 0.1)
+            nn.init.constant_(conv.bias, 0.1)
+        for parameter in [self.Wau, self.Wru, self.Wpu, self.Wai, self.Wri, self.Wpi, self.Wmul]:
+            nn.init.uniform_(parameter, -0.1, 0.1)
+        for parameter in [self.bau, self.bbu, self.bai, self.bbi, self.biases, self.gbias]:
+            nn.init.constant_(parameter, 0.1)
+        nn.init.uniform_(self.u_fc.weight, -0.1, 0.1)
+        nn.init.constant_(self.u_fc.bias, 0.1)
+        nn.init.uniform_(self.i_fc.weight, -0.1, 0.1)
+        nn.init.constant_(self.i_fc.bias, 0.1)
 
-    def _encode_review_tokens(
-        self,
-        review_tokens: torch.Tensor,
-        convs: nn.ModuleList,
-    ) -> torch.Tensor:
-        if review_tokens.dim() != 3:
-            raise ValueError("Expected review tokens with shape [B, R, L].")
-        batch_size, review_count, review_length = review_tokens.shape
-        if review_length != self.review_length:
-            raise ValueError(
-                "Expected review_length={}, got {}".format(self.review_length, review_length)
-            )
-        flattened = review_tokens.reshape(batch_size * review_count, review_length)
-        embedded = cast(torch.Tensor, self.word_embedding(flattened)).transpose(1, 2)
+    def _maybe_load_word2vec(self, train_dataset: object) -> None:
+        path = str(self.configs.get("word2vec", self.configs.get("glove_path", "")))
+        if not path or not os.path.exists(path):
+            return
+        if not path.endswith(".bin"):
+            return
+        try:
+            self.user_remb.weight.data.copy_(torch.tensor(self._read_binary_word2vec(path, getattr(train_dataset, "vocabulary_user"), self.emb_size), dtype=torch.float32))
+            self.item_remb.weight.data.copy_(torch.tensor(self._read_binary_word2vec(path, getattr(train_dataset, "vocabulary_item"), self.emb_size), dtype=torch.float32))
+            self.graph_cnn.rembedding.weight.data.copy_(torch.tensor(self._read_binary_word2vec(path, getattr(train_dataset, "vocabulary"), self.emb_size), dtype=torch.float32))
+            print("SSG loaded binary word2vec embeddings")
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            print(f"SSG word2vec load skipped: {exc}")
 
-        conv_outputs: List[torch.Tensor] = []
-        for conv in convs:
-            conv_out = cast(torch.Tensor, self.relu(conv(embedded)))
-            pooled = cast(torch.Tensor, torch.amax(conv_out, dim=2))
-            conv_outputs.append(pooled)
-        combined = cast(torch.Tensor, torch.cat(conv_outputs, dim=1))
-        return combined.reshape(batch_size, review_count, self.cnn_out_dim)
+    @staticmethod
+    def _read_binary_word2vec(path: str, vocabulary: Mapping[str, int], embedding_dim: int) -> np.ndarray:
+        init_w = np.random.uniform(-1.0, 1.0, (len(vocabulary), embedding_dim)).astype(np.float32)
+        with open(path, "rb") as handle:
+            header = handle.readline()
+            vocab_size, layer1_size = map(int, header.split())
+            binary_len = np.dtype("float32").itemsize * layer1_size
+            if layer1_size != embedding_dim:
+                raise ValueError(f"word2vec dim {layer1_size} != configured {embedding_dim}")
+            for _ in range(vocab_size):
+                word_bytes = []
+                while True:
+                    ch = handle.read(1)
+                    if ch == b" ":
+                        word = b"".join(word_bytes).decode("latin1")
+                        break
+                    if ch != b"\n":
+                        word_bytes.append(ch)
+                vector = np.frombuffer(handle.read(binary_len), dtype="float32")
+                if word in vocabulary:
+                    init_w[int(vocabulary[word])] = vector
+        return init_w
 
-    def _encode_review_inputs(
-        self,
-        reviews: torch.Tensor,
-        convs: nn.ModuleList,
-        projection: nn.Linear,
-    ) -> torch.Tensor:
-        if self.review_input_mode == "embedding":
-            if reviews.dim() != 3 or reviews.size(-1) != self.review_dim:
-                raise ValueError(f"Expected review embeddings with shape [B, R, {self.review_dim}].")
-            return cast(torch.Tensor, projection(reviews.float()))
-        return self._encode_review_tokens(reviews.long(), convs)
+    @staticmethod
+    def broad_mm(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        bsz, rows, dim = x.size()
+        dim_y, cols = y.size()
+        assert dim == dim_y
+        return torch.mm(x.view(-1, dim), y).view(bsz, rows, cols)
 
-    def _masked_id_attention(
-        self,
-        review_features: torch.Tensor,
-        review_ids: torch.Tensor,
-        review_tokens: torch.Tensor,
-        review_fc: nn.Linear,
-        id_embedding: nn.Embedding,
-        id_fc: nn.Linear,
-        attention_fc: nn.Linear,
-        padding_value: int,
-    ) -> torch.Tensor:
-        safe_review_ids = review_ids.clamp(min=0, max=padding_value)
-        review_id_features = cast(torch.Tensor, id_embedding(safe_review_ids))
-        review_proj = cast(torch.Tensor, review_fc(review_features))
-        id_proj = cast(torch.Tensor, id_fc(review_id_features))
-        attention_logits = cast(torch.Tensor, attention_fc(self.relu(review_proj + id_proj)))
+    def _assert_and_log_shapes(self, batch: Mapping[str, torch.Tensor]) -> None:
+        if not self.debug_shapes or self._shape_logged:
+            return
+        keys = ["nodes", "reviews", "ratings", "adj", "pairs", "input_u", "input_i", "reuid", "reiid", "u_pos_ind", "u_rel_dt", "u_abs_dt"]
+        print("SSG model input shapes:", {key: tuple(batch[key].shape) for key in keys if key in batch})
+        self._shape_logged = True
 
-        if self.review_input_mode == "embedding":
-            review_mask = review_features.abs().sum(dim=2).gt(0)
-        else:
-            review_mask = review_tokens.ne(self.pad_idx).any(dim=2)
-        review_mask = review_mask & safe_review_ids.ne(padding_value)
-        mask = review_mask.unsqueeze(-1)
-        attention_logits = attention_logits.masked_fill(~mask, -1e9)
-        attention = cast(torch.Tensor, torch.softmax(attention_logits, dim=1))
-        attention = attention * mask.to(attention.dtype)
-        attention = attention / attention.sum(dim=1, keepdim=True).clamp_min(1e-8)
-        return cast(torch.Tensor, torch.sum(attention * review_features, dim=1))
+    def forward_original(self, input_u: torch.Tensor, input_i: torch.Tensor, reuid: torch.Tensor, reiid: torch.Tensor, u_s_renum: torch.Tensor, i_s_renum: torch.Tensor, u_pos_ind: torch.Tensor, i_pos_ind: torch.Tensor, u_rel_dt: torch.Tensor, i_rel_dt: torch.Tensor, u_abs_dt: torch.Tensor, i_abs_dt: torch.Tensor, nodes: torch.Tensor, reviews: torch.Tensor, ratings: torch.Tensor, adj: torch.Tensor, pairs: torch.Tensor, uid: torch.Tensor, iid: torch.Tensor, y: torch.Tensor, clip: bool) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        edge_emb = self.graph_cnn(reviews)
+        graph_ufeas, graph_ifeas = self.graph_view(nodes, edge_emb, ratings, adj, pairs)
 
-    def _build_sequence_mask(
-        self,
-        sequence_features: torch.Tensor,
-        sequence_lengths: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        batch_size, seq_len, _ = sequence_features.shape
-        if sequence_lengths is not None:
-            clipped_lengths = sequence_lengths.clamp(min=0, max=seq_len)
-            positions = torch.arange(seq_len, device=sequence_features.device).unsqueeze(0)
-            return positions < clipped_lengths.unsqueeze(1)
-        return sequence_features.abs().sum(dim=2).gt(0)
+        embedding_users = self.user_remb(input_u)
+        embedding_items = self.item_remb(input_i)
+        pooled_out_u = []
+        for idx in range(len(self.filter_sizes)):
+            h = F.relu(self.user_cnns[idx](embedding_users.view(-1, 1, self.review_len_u, self.emb_size)))
+            pooled_out_u.append(self.user_pools[idx](h))
+        reviews_u = torch.cat(pooled_out_u, 3).view(-1, self.review_num_u, self.set_dim)
+        pooled_out_i = []
+        for idx in range(len(self.filter_sizes)):
+            h = F.relu(self.item_cnns[idx](embedding_items.view(-1, 1, self.review_len_i, self.emb_size)))
+            pooled_out_i.append(self.item_pools[idx](h))
+        reviews_i = torch.cat(pooled_out_i, 3).view(-1, self.review_num_i, self.set_dim)
 
-    def _sequence_attention(
-        self,
-        sequence_features: torch.Tensor,
-        sequence_lengths: Optional[torch.Tensor],
-        pos_ind: Optional[torch.Tensor],
-        rel_dt: Optional[torch.Tensor],
-        gru: nn.GRU,
-        query_projection: nn.Linear,
-        temporal_fc: nn.Linear,
-    ) -> torch.Tensor:
-        batch_size, seq_len, _ = sequence_features.shape
-        if seq_len == 0:
-            return sequence_features.new_zeros(batch_size, self.gru_dim)
+        iid_a = F.relu(self.item_idemb_att(reuid.clamp(min=0, max=self.item_num + 1)))
+        u_j = self.broad_mm(F.relu(self.broad_mm(reviews_u, self.Wau) + self.broad_mm(iid_a, self.Wru) + self.bau), self.Wpu) + self.bbu
+        u_a = F.softmax(u_j, 1)
+        uid_a = F.relu(self.user_idemb_att(reiid.clamp(min=0, max=self.user_num + 1)))
+        i_j = self.broad_mm(F.relu(self.broad_mm(reviews_i, self.Wai) + self.broad_mm(uid_a, self.Wri) + self.bai), self.Wpi) + self.bbi
+        i_a = F.softmax(i_j, 1)
 
-        if sequence_lengths is None:
-            sequence_lengths = self._build_sequence_mask(sequence_features, None).sum(dim=1)
-        clipped_lengths = sequence_lengths.clamp(min=1, max=seq_len).cpu()
-        sorted_lengths, sort_idx = torch.sort(clipped_lengths, descending=True)
-        unsort_idx = torch.argsort(sort_idx)
-        sorted_features = sequence_features[sort_idx]
-        packed = nn.utils.rnn.pack_padded_sequence(sorted_features, sorted_lengths, batch_first=True, enforce_sorted=True)
-        packed_out, hidden = gru(packed)
-        unpacked, _ = nn.utils.rnn.pad_packed_sequence(packed_out, batch_first=True, total_length=seq_len)
-        gru_outputs = unpacked[unsort_idx]
-        last_hidden = hidden[-1][unsort_idx]
-        content_query = cast(torch.Tensor, query_projection(last_hidden)).unsqueeze(2)
-        content_attn = cast(
-            torch.Tensor,
-            torch.bmm(gru_outputs, content_query).squeeze(2) / (self.gru_dim ** 0.5),
-        )
+        u_set = torch.sum(reviews_u * u_a, 1)
+        i_set = torch.sum(reviews_i * i_a, 1)
+        u_hn = self.u_gru(reviews_u, u_s_renum, u_pos_ind, u_rel_dt, u_abs_dt)
+        i_hn = self.i_gru(reviews_i, i_s_renum, i_pos_ind, i_rel_dt, i_abs_dt)
 
-        if pos_ind is None:
-            pos_ind = torch.arange(seq_len, device=sequence_features.device).unsqueeze(0).expand(batch_size, -1)
-        if rel_dt is None:
-            rel_dt = torch.zeros(batch_size, seq_len, dtype=torch.long, device=sequence_features.device)
-        pos_ind = pos_ind.clamp(min=0, max=self.position_embedding.num_embeddings - 1)
-        rel_dt = rel_dt.clamp(min=0, max=self.max_rel_bucket)
+        decov_loss = decov(u_set, u_hn) + decov(i_set, i_hn)
+        decov_loss = decov_loss + decov(u_hn, graph_ufeas) + decov(i_hn, graph_ifeas)
+        decov_loss = decov_loss + decov(u_set, graph_ufeas) + decov(i_set, graph_ifeas)
 
-        temporal_emb = cast(torch.Tensor, self.position_embedding(pos_ind))
-        temporal_emb = temporal_emb + cast(torch.Tensor, self.relative_time_embedding(rel_dt))
-        temporal_attn = cast(torch.Tensor, temporal_fc(self.leaky_relu(temporal_emb)).squeeze(-1))
+        u_feas = self.u_fc(torch.cat([u_set, u_hn, graph_ufeas], dim=1))
+        i_feas = self.i_fc(torch.cat([i_set, i_hn, graph_ifeas], dim=1))
+        uid_emb = self.idemb(uid).view(-1, self.n_latent)
+        iid_emb = self.idemb(iid).view(-1, self.n_latent)
+        u_feas = u_feas + uid_emb
+        i_feas = i_feas + iid_emb
+        fm = F.relu(u_feas * i_feas)
+        mul = torch.matmul(fm, self.Wmul)
+        pred = torch.sum(mul, 1, keepdim=True)
+        u_bias = torch.gather(self.biases, 0, uid).view(-1, 1)
+        i_bias = torch.gather(self.biases, 0, iid).view(-1, 1)
+        pred = (pred + u_bias + i_bias + self.gbias).view(-1)
+        if clip:
+            pred = torch.clamp(pred, self.min_rating, self.max_rating_value)
+        y = y.float().view(-1)
+        mse = 0.5 * self.mse_loss(pred, y)
+        l2_loss = 0.5 * torch.sum(self.Wau ** 2) + 0.5 * torch.sum(self.Wru ** 2) + 0.5 * torch.sum(self.Wai ** 2) + 0.5 * torch.sum(self.Wri ** 2)
+        loss = mse + self.l2_reg_lambda * l2_loss + self.decov_lambda * decov_loss
+        mae = torch.mean(torch.abs(pred - y))
+        rmse = torch.sqrt(torch.mean((pred - y) ** 2))
+        self._last_losses = {"mse_loss": mse.detach(), "l2_loss": l2_loss.detach(), "decov_loss": decov_loss.detach(), "total_loss": loss.detach(), "mae": mae.detach(), "rmse": rmse.detach()}
+        return loss, mae, rmse, pred
 
-        attention_logits = content_attn + self.beta * temporal_attn
-        mask = self._build_sequence_mask(gru_outputs, sequence_lengths)
-        attention_logits = attention_logits.masked_fill(~mask, -1e9)
-        attention = cast(torch.Tensor, torch.softmax(attention_logits, dim=1))
-        attention = attention * mask.to(attention.dtype)
-        attention = attention / attention.sum(dim=1, keepdim=True).clamp_min(1e-8)
-        return cast(torch.Tensor, torch.sum(attention.unsqueeze(-1) * gru_outputs, dim=1))
-
-    def _pool_graph_reviews(self, graph_reviews: torch.Tensor) -> torch.Tensor:
-        if self.review_input_mode == "embedding":
-            if graph_reviews.dim() != 2 or graph_reviews.size(1) != self.review_dim:
-                raise ValueError(f"Expected graph review embeddings with shape [E, {self.review_dim}].")
-            return cast(torch.Tensor, self.user_embedding_projection(graph_reviews.float()))
-        if graph_reviews.dim() == 2:
-            graph_reviews = graph_reviews.unsqueeze(1)
-        if graph_reviews.dim() != 3:
-            raise ValueError("Expected graph_reviews with shape [E, L] or [E, R, L].")
-        edge_features = self._encode_review_tokens(graph_reviews, self.user_convs)
-        return cast(torch.Tensor, edge_features.mean(dim=1))
-
-    def _graph_encoder(
-        self,
-        user_id: torch.Tensor,
-        item_id: torch.Tensor,
-        graph_adj: Optional[torch.Tensor],
-        graph_reviews: Optional[torch.Tensor],
-        graph_ratings: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch_size = user_id.size(0)
-        zero_user = self.user_id_embedding.weight.new_zeros(batch_size, self.graph_hidden_dim)
-        zero_item = self.item_id_embedding.weight.new_zeros(batch_size, self.graph_hidden_dim)
-        if not self.use_graph_view or graph_adj is None or graph_reviews is None or graph_ratings is None:
-            return zero_user, zero_item
-
-        if graph_adj.dim() == 3:
-            graph_adj = graph_adj[0]
-        if graph_reviews.dim() == 3:
-            graph_reviews = graph_reviews[0]
-        if graph_ratings.dim() == 2:
-            graph_ratings = graph_ratings[0]
-        if graph_adj.dim() != 2 or graph_adj.size(0) != 2:
-            raise ValueError("Expected full graph_adj with shape [2, E].")
-
-        valid_mask = graph_adj[0].ge(0) & graph_adj[1].ge(0) & graph_ratings.gt(0)
-        if not bool(valid_mask.any()):
-            return zero_user, zero_item
-
-        src_nodes = graph_adj[0, valid_mask].clamp(min=0, max=self.num_users + self.num_items - 1)
-        dst_nodes = graph_adj[1, valid_mask].clamp(min=0, max=self.num_users + self.num_items - 1)
-        edge_reviews = self._pool_graph_reviews(graph_reviews[valid_mask])
-        rating_index = graph_ratings[valid_mask].long().clamp(min=1, max=5) - 1
-        edge_rating_one_hot = F.one_hot(rating_index, num_classes=5).float()
-
-        bidir_src = torch.cat([src_nodes, dst_nodes], dim=0)
-        bidir_dst = torch.cat([dst_nodes, src_nodes], dim=0)
-        edge_review_proj = cast(torch.Tensor, self.graph_review_projection(edge_reviews))
-        edge_rating_proj = cast(torch.Tensor, self.graph_rating_projection(edge_rating_one_hot))
-        edge_context = self.leaky_relu(edge_review_proj + edge_rating_proj)
-        edge_context = torch.cat([edge_context, edge_context], dim=0)
-
-        node_states = torch.cat([cast(torch.Tensor, self.graph_user_embedding.weight), cast(torch.Tensor, self.graph_item_embedding.weight)], dim=0)
-        num_nodes = node_states.size(0)
-        for _ in range(self.n_hops):
-            src_states = node_states[bidir_src]
-            dst_states = node_states[bidir_dst]
-            attention_hidden = self.leaky_relu(
-                cast(torch.Tensor, self.graph_src_projection(src_states))
-                + cast(torch.Tensor, self.graph_dst_projection(dst_states))
-                + edge_context
-            )
-            head_scores = [cast(torch.Tensor, head(attention_hidden)) for head in self.graph_attention_heads]
-            logits = torch.mean(torch.cat(head_scores, dim=1), dim=1)
-            exp_logits = torch.exp(logits - logits.max()).clamp_max(1e6)
-            denom = exp_logits.new_zeros(num_nodes)
-            denom.index_add_(0, bidir_dst, exp_logits)
-            attention_scores = exp_logits / denom[bidir_dst].clamp_min(1e-8)
-
-            message_inputs = torch.cat([src_states, edge_context], dim=1)
-            messages = cast(torch.Tensor, self.graph_message_projection(message_inputs))
-            messages = attention_scores.unsqueeze(1) * messages
-            aggregated = messages.new_zeros(num_nodes, self.graph_hidden_dim)
-            aggregated.index_add_(0, bidir_dst, messages)
-            updated = cast(torch.Tensor, self.graph_update(torch.cat([node_states, aggregated], dim=1)))
-            node_states = self.dropout(self.relu(updated)) + node_states
-
-        user_graph = cast(torch.Tensor, self.graph_output_projection(node_states[user_id.clamp(min=0, max=self.num_users - 1)]))
-        item_graph = cast(torch.Tensor, self.graph_output_projection(node_states[self.num_users + item_id.clamp(min=0, max=self.num_items - 1)]))
-        return user_graph, item_graph
-
-    def _decov(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        if x.size(0) == 0:
-            return x.new_zeros(())
-        x_centered = x - x.mean(dim=0, keepdim=True)
-        y_centered = y - y.mean(dim=0, keepdim=True)
-        cov = torch.matmul(x_centered.transpose(0, 1), y_centered) / float(x.size(0))
-        return 0.5 * cov.pow(2).sum()
-
-    def _collect_decov_loss(
-        self,
-        set_view: Optional[torch.Tensor],
-        seq_view: Optional[torch.Tensor],
-        graph_view: Optional[torch.Tensor],
-    ) -> torch.Tensor:
-        loss = self.global_bias.new_zeros(())
-        active_views = [
-            view
-            for view in [set_view, seq_view, graph_view]
-            if view is not None
-        ]
-        for first_index in range(len(active_views)):
-            for second_index in range(first_index + 1, len(active_views)):
-                loss = loss + self._decov(active_views[first_index], active_views[second_index])
-        return cast(torch.Tensor, loss)
-
-    def _assert_and_log_shapes(
-        self,
-        user_review: torch.Tensor,
-        user_seq_reviews: Optional[torch.Tensor],
-        graph_adj: Optional[torch.Tensor],
-        graph_reviews: Optional[torch.Tensor],
-    ) -> None:
-        if user_review.dim() != 3:
-            raise ValueError("Expected user_review with shape [B, R, L].")
-        if user_seq_reviews is not None and user_seq_reviews.dim() != 3:
-            raise ValueError("Expected user_seq_reviews with shape [B, S, L].")
-        expected_last_dim = self.review_dim if self.review_input_mode == "embedding" else self.review_length
-        if user_review.size(-1) != expected_last_dim:
-            raise ValueError(f"Expected user_review last dim {expected_last_dim}, got {user_review.size(-1)}.")
-        if user_seq_reviews is not None and user_seq_reviews.size(-1) != expected_last_dim:
-            raise ValueError(f"Expected user_seq_reviews last dim {expected_last_dim}, got {user_seq_reviews.size(-1)}.")
-        if graph_adj is not None and not ((graph_adj.dim() == 3 and graph_adj.size(1) == 2) or (graph_adj.dim() == 2 and graph_adj.size(0) == 2)):
-            raise ValueError("Expected graph_adj with shape [B, 2, E] or [2, E].")
-        if graph_reviews is not None and graph_reviews.dim() not in {2, 3}:
-            raise ValueError("Expected graph_reviews with shape [B, E, L] or [E, L].")
-
-        debug_shapes = self._get_bool_config("debug_shapes", False)
-        if debug_shapes and not self._shape_logged:
-            print(
-                "SSG shape check:",
-                {
-                    "user_review": tuple(user_review.shape),
-                    "user_seq_reviews": None if user_seq_reviews is None else tuple(user_seq_reviews.shape),
-                    "graph_adj": None if graph_adj is None else tuple(graph_adj.shape),
-                    "graph_reviews": None if graph_reviews is None else tuple(graph_reviews.shape),
-                },
-            )
-            self._shape_logged = True
-
-    def _l2_regularization(self) -> torch.Tensor:
-        reg = self.global_bias.new_zeros(())
-        for name, parameter in self.named_parameters():
-            if not parameter.requires_grad:
-                continue
-            if not (
-                name.startswith("user_review_fc")
-                or name.startswith("item_review_fc")
-                or name.startswith("user_id_attention_fc")
-                or name.startswith("item_id_attention_fc")
-                or name.startswith("user_attention_fc")
-                or name.startswith("item_attention_fc")
-            ):
-                continue
-            reg = reg + 0.5 * parameter.pow(2).sum()
-        return cast(torch.Tensor, reg)
-
-    def forward(
-        self,
-        user_id: torch.Tensor,
-        item_id: torch.Tensor,
-        user_review: torch.Tensor,
-        item_review: torch.Tensor,
-        user_review_item_ids: torch.Tensor,
-        item_review_user_ids: torch.Tensor,
-        user_seq_reviews: Optional[torch.Tensor] = None,
-        item_seq_reviews: Optional[torch.Tensor] = None,
-        user_seq_len: Optional[torch.Tensor] = None,
-        item_seq_len: Optional[torch.Tensor] = None,
-        user_pos_ind: Optional[torch.Tensor] = None,
-        item_pos_ind: Optional[torch.Tensor] = None,
-        user_rel_dt: Optional[torch.Tensor] = None,
-        item_rel_dt: Optional[torch.Tensor] = None,
-        user_abs_dt: Optional[torch.Tensor] = None,
-        item_abs_dt: Optional[torch.Tensor] = None,
-        graph_adj: Optional[torch.Tensor] = None,
-        graph_reviews: Optional[torch.Tensor] = None,
-        graph_ratings: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        del user_abs_dt, item_abs_dt
-        self._assert_and_log_shapes(user_review, user_seq_reviews, graph_adj, graph_reviews)
-
-        user_review_features = self._encode_review_inputs(user_review, self.user_convs, self.user_embedding_projection)
-        item_review_features = self._encode_review_inputs(item_review, self.item_convs, self.item_embedding_projection)
-
-        user_set = self._masked_id_attention(
-            review_features=user_review_features,
-            review_ids=user_review_item_ids,
-            review_tokens=user_review,
-            review_fc=self.user_review_fc,
-            id_embedding=self.user_review_item_id_embedding,
-            id_fc=self.user_id_attention_fc,
-            attention_fc=self.user_attention_fc,
-            padding_value=self.num_items,
-        )
-        item_set = self._masked_id_attention(
-            review_features=item_review_features,
-            review_ids=item_review_user_ids,
-            review_tokens=item_review,
-            review_fc=self.item_review_fc,
-            id_embedding=self.item_review_user_id_embedding,
-            id_fc=self.item_id_attention_fc,
-            attention_fc=self.item_attention_fc,
-            padding_value=self.num_users,
-        )
-
-        if user_seq_reviews is not None:
-            user_seq_features = self._encode_review_inputs(user_seq_reviews, self.user_convs, self.user_embedding_projection)
-        else:
-            user_seq_features = user_review_features[:, : min(user_review_features.size(1), self.seq_count), :]
-        if item_seq_reviews is not None:
-            item_seq_features = self._encode_review_inputs(item_seq_reviews, self.item_convs, self.item_embedding_projection)
-        else:
-            item_seq_features = item_review_features[:, : min(item_review_features.size(1), self.seq_count), :]
-        if user_pos_ind is not None:
-            user_pos_ind = user_pos_ind[:, : user_seq_features.size(1)]
-        if item_pos_ind is not None:
-            item_pos_ind = item_pos_ind[:, : item_seq_features.size(1)]
-        if user_rel_dt is not None:
-            user_rel_dt = user_rel_dt[:, : user_seq_features.size(1)]
-        if item_rel_dt is not None:
-            item_rel_dt = item_rel_dt[:, : item_seq_features.size(1)]
-
-        user_seq = self._sequence_attention(
-            sequence_features=user_seq_features,
-            sequence_lengths=user_seq_len,
-            pos_ind=user_pos_ind,
-            rel_dt=user_rel_dt,
-            gru=self.user_gru,
-            query_projection=self.user_content_query,
-            temporal_fc=self.user_temporal_fc,
-        )
-        item_seq = self._sequence_attention(
-            sequence_features=item_seq_features,
-            sequence_lengths=item_seq_len,
-            pos_ind=item_pos_ind,
-            rel_dt=item_rel_dt,
-            gru=self.item_gru,
-            query_projection=self.item_content_query,
-            temporal_fc=self.item_temporal_fc,
-        )
-
-        user_graph, item_graph = self._graph_encoder(
-            user_id=user_id,
-            item_id=item_id,
-            graph_adj=graph_adj,
-            graph_reviews=graph_reviews,
-            graph_ratings=graph_ratings,
-        )
-
-        user_views: List[torch.Tensor] = []
-        item_views: List[torch.Tensor] = []
-        self._cached_user_set = user_set if self.use_set_view else None
-        self._cached_item_set = item_set if self.use_set_view else None
-        self._cached_user_seq = user_seq if self.use_sequence_view else None
-        self._cached_item_seq = item_seq if self.use_sequence_view else None
-        self._cached_user_graph = user_graph if self.use_graph_view else None
-        self._cached_item_graph = item_graph if self.use_graph_view else None
-
-        if self.use_set_view:
-            user_views.append(user_set)
-            item_views.append(item_set)
-        if self.use_sequence_view:
-            user_views.append(user_seq)
-            item_views.append(item_seq)
-        if self.use_graph_view:
-            user_views.append(user_graph)
-            item_views.append(item_graph)
-
-        user_latent = cast(torch.Tensor, self.user_fusion(self.dropout(torch.cat(user_views, dim=1))))
-        item_latent = cast(torch.Tensor, self.item_fusion(self.dropout(torch.cat(item_views, dim=1))))
-
-        user_latent = user_latent + cast(torch.Tensor, self.user_id_latent(self.user_id_embedding(user_id)))
-        item_latent = item_latent + cast(torch.Tensor, self.item_id_latent(self.item_id_embedding(item_id)))
-
-        interaction = self.relu(user_latent * item_latent)
-        pred = cast(torch.Tensor, self.predict_layer(self.dropout(interaction)))
-        pred = pred + cast(torch.Tensor, self.user_bias(user_id))
-        pred = pred + cast(torch.Tensor, self.item_bias(item_id))
-        pred = pred + self.global_bias
-        if (self.training and self.train_clip) or ((not self.training) and self.test_clip):
-            pred = pred.clamp(min=self.min_rating, max=self.max_rating)
-        return pred
-
-    def cal_loss(
-        self,
-        batch_data: Union[Tuple[torch.Tensor, ...], Mapping[str, torch.Tensor]],
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        if isinstance(batch_data, Mapping):
-            user_id = batch_data["user_id"]
-            item_id = batch_data["item_id"]
-            user_review = batch_data["user_review"]
-            item_review = batch_data["item_review"]
-            user_review_item_ids = batch_data["user_review_item_ids"]
-            item_review_user_ids = batch_data["item_review_user_ids"]
-            user_seq_reviews = batch_data.get("user_seq_reviews")
-            item_seq_reviews = batch_data.get("item_seq_reviews")
-            user_seq_len = batch_data.get("user_seq_len")
-            item_seq_len = batch_data.get("item_seq_len")
-            user_pos_ind = batch_data.get("user_pos_ind")
-            item_pos_ind = batch_data.get("item_pos_ind")
-            user_rel_dt = batch_data.get("user_rel_dt")
-            item_rel_dt = batch_data.get("item_rel_dt")
-            user_abs_dt = batch_data.get("user_abs_dt")
-            item_abs_dt = batch_data.get("item_abs_dt")
-            graph_adj = batch_data.get("graph_adj")
-            graph_reviews = batch_data.get("graph_reviews")
-            graph_ratings = batch_data.get("graph_ratings")
-            ratings = batch_data["rating"]
-        else:
-            if len(batch_data) < 7:
-                raise ValueError("Expected at least 7 tensors in batch_data.")
-            user_id, item_id, user_review, item_review, user_review_item_ids, item_review_user_ids = batch_data[:6]
-            ratings = batch_data[-1]
-            optional_tensors = cast(List[Optional[torch.Tensor]], list(batch_data[6:-1]))
-            while len(optional_tensors) < 13:
-                optional_tensors.append(None)
-            (
-                user_seq_reviews,
-                item_seq_reviews,
-                user_seq_len,
-                item_seq_len,
-                user_pos_ind,
-                item_pos_ind,
-                user_rel_dt,
-                item_rel_dt,
-                user_abs_dt,
-                item_abs_dt,
-                graph_adj,
-                graph_reviews,
-                graph_ratings,
-            ) = optional_tensors[:13]
-
-        predictions = self.forward(
-            user_id=user_id,
-            item_id=item_id,
-            user_review=user_review,
-            item_review=item_review,
-            user_review_item_ids=user_review_item_ids,
-            item_review_user_ids=item_review_user_ids,
-            user_seq_reviews=user_seq_reviews,
-            item_seq_reviews=item_seq_reviews,
-            user_seq_len=cast(Optional[torch.Tensor], user_seq_len),
-            item_seq_len=cast(Optional[torch.Tensor], item_seq_len),
-            user_pos_ind=cast(Optional[torch.Tensor], user_pos_ind),
-            item_pos_ind=cast(Optional[torch.Tensor], item_pos_ind),
-            user_rel_dt=cast(Optional[torch.Tensor], user_rel_dt),
-            item_rel_dt=cast(Optional[torch.Tensor], item_rel_dt),
-            user_abs_dt=cast(Optional[torch.Tensor], user_abs_dt),
-            item_abs_dt=cast(Optional[torch.Tensor], item_abs_dt),
-            graph_adj=cast(Optional[torch.Tensor], graph_adj),
-            graph_reviews=cast(Optional[torch.Tensor], graph_reviews),
-            graph_ratings=cast(Optional[torch.Tensor], graph_ratings),
-        )
-
-        mse_loss = self.loss_fn(predictions, ratings.view(-1, 1).float())
-        l2_loss = self._l2_regularization()
-        decov_loss = self._collect_decov_loss(
-            cast(Optional[torch.Tensor], self._cached_user_set),
-            cast(Optional[torch.Tensor], self._cached_user_seq),
-            cast(Optional[torch.Tensor], self._cached_user_graph),
-        ) + self._collect_decov_loss(
-            cast(Optional[torch.Tensor], self._cached_item_set),
-            cast(Optional[torch.Tensor], self._cached_item_seq),
-            cast(Optional[torch.Tensor], self._cached_item_graph),
-        )
-        total_loss = mse_loss + self.l2_lambda * l2_loss + self.decov_lambda * decov_loss
-
-        loss_dict = {
-            "mse_loss": float(mse_loss.detach().item()),
-            "l2_loss": float(l2_loss.detach().item()),
-            "decov_loss": float(decov_loss.detach().item()),
-            "total_loss": float(total_loss.detach().item()),
+    def _batch_from_kwargs(self, kwargs: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        input_u = kwargs["input_u"] if "input_u" in kwargs else kwargs["user_review"]
+        input_i = kwargs["input_i"] if "input_i" in kwargs else kwargs["item_review"]
+        reuid = kwargs["reuid"] if "reuid" in kwargs else kwargs["user_review_item_ids"]
+        reiid = kwargs["reiid"] if "reiid" in kwargs else kwargs["item_review_user_ids"]
+        u_s_renum = kwargs["u_s_renum"] if "u_s_renum" in kwargs else kwargs["user_seq_len"]
+        i_s_renum = kwargs["i_s_renum"] if "i_s_renum" in kwargs else kwargs["item_seq_len"]
+        u_pos_ind = kwargs["u_pos_ind"] if "u_pos_ind" in kwargs else kwargs["user_pos_ind"]
+        i_pos_ind = kwargs["i_pos_ind"] if "i_pos_ind" in kwargs else kwargs["item_pos_ind"]
+        u_rel_dt = kwargs["u_rel_dt"] if "u_rel_dt" in kwargs else kwargs["user_rel_dt"]
+        i_rel_dt = kwargs["i_rel_dt"] if "i_rel_dt" in kwargs else kwargs["item_rel_dt"]
+        u_abs_dt = kwargs["u_abs_dt"] if "u_abs_dt" in kwargs else kwargs["user_abs_dt"]
+        i_abs_dt = kwargs["i_abs_dt"] if "i_abs_dt" in kwargs else kwargs["item_abs_dt"]
+        nodes = kwargs["nodes"] if "nodes" in kwargs else kwargs["graph_nodes"]
+        reviews = kwargs["reviews"] if "reviews" in kwargs else kwargs["graph_reviews"]
+        graph_ratings = kwargs["ratings"] if "ratings" in kwargs else kwargs["graph_ratings"]
+        adj = kwargs["adj"] if "adj" in kwargs else kwargs["graph_adj"]
+        return {
+            "input_u": input_u,
+            "input_i": input_i,
+            "reuid": reuid,
+            "reiid": reiid,
+            "u_s_renum": u_s_renum,
+            "i_s_renum": i_s_renum,
+            "u_pos_ind": u_pos_ind,
+            "i_pos_ind": i_pos_ind,
+            "u_rel_dt": u_rel_dt,
+            "i_rel_dt": i_rel_dt,
+            "u_abs_dt": u_abs_dt,
+            "i_abs_dt": i_abs_dt,
+            "nodes": nodes,
+            "reviews": reviews,
+            "ratings": graph_ratings,
+            "adj": adj,
+            "pairs": kwargs["pairs"],
+            "user_id": kwargs["user_id"],
+            "item_id": kwargs["item_id"],
+            "rating": kwargs.get("rating", torch.zeros_like(kwargs["user_id"], dtype=torch.float32)),
         }
-        return total_loss, loss_dict
 
-    def predict_scores(
-        self,
-        user_id: torch.Tensor,
-        item_id: torch.Tensor,
-        user_review: torch.Tensor,
-        item_review: torch.Tensor,
-        user_review_item_ids: torch.Tensor,
-        item_review_user_ids: torch.Tensor,
-        user_seq_reviews: Optional[torch.Tensor] = None,
-        item_seq_reviews: Optional[torch.Tensor] = None,
-        user_seq_len: Optional[torch.Tensor] = None,
-        item_seq_len: Optional[torch.Tensor] = None,
-        user_pos_ind: Optional[torch.Tensor] = None,
-        item_pos_ind: Optional[torch.Tensor] = None,
-        user_rel_dt: Optional[torch.Tensor] = None,
-        item_rel_dt: Optional[torch.Tensor] = None,
-        user_abs_dt: Optional[torch.Tensor] = None,
-        item_abs_dt: Optional[torch.Tensor] = None,
-        graph_adj: Optional[torch.Tensor] = None,
-        graph_reviews: Optional[torch.Tensor] = None,
-        graph_ratings: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        return self.forward(
-            user_id=user_id,
-            item_id=item_id,
-            user_review=user_review,
-            item_review=item_review,
-            user_review_item_ids=user_review_item_ids,
-            item_review_user_ids=item_review_user_ids,
-            user_seq_reviews=user_seq_reviews,
-            item_seq_reviews=item_seq_reviews,
-            user_seq_len=user_seq_len,
-            item_seq_len=item_seq_len,
-            user_pos_ind=user_pos_ind,
-            item_pos_ind=item_pos_ind,
-            user_rel_dt=user_rel_dt,
-            item_rel_dt=item_rel_dt,
-            user_abs_dt=user_abs_dt,
-            item_abs_dt=item_abs_dt,
-            graph_adj=graph_adj,
-            graph_reviews=graph_reviews,
-            graph_ratings=graph_ratings,
+    def forward(self, **kwargs: torch.Tensor) -> torch.Tensor:
+        batch = self._batch_from_kwargs(kwargs)
+        self._assert_and_log_shapes(batch)
+        clip = self.train_clip if self.training else self.test_clip
+        _, _, _, pred = self.forward_original(
+            batch["input_u"].long(), batch["input_i"].long(), batch["reuid"].long(), batch["reiid"].long(),
+            batch["u_s_renum"].long(), batch["i_s_renum"].long(), batch["u_pos_ind"].long(), batch["i_pos_ind"].long(),
+            batch["u_rel_dt"].long(), batch["i_rel_dt"].long(), batch["u_abs_dt"].float(), batch["i_abs_dt"].float(),
+            batch["nodes"].long(), batch["reviews"].long(), batch["ratings"].float(), batch["adj"].float(), batch["pairs"].long(),
+            batch["user_id"].long(), batch["item_id"].long(), batch["rating"].float(), clip,
         )
+        return pred.view(-1, 1)
+
+    def cal_loss(self, batch_data: Mapping[str, torch.Tensor]) -> tuple[torch.Tensor, dict[str, float]]:
+        batch = self._batch_from_kwargs(batch_data)
+        self._assert_and_log_shapes(batch)
+        loss, mae, rmse, _ = self.forward_original(
+            batch["input_u"].long(), batch["input_i"].long(), batch["reuid"].long(), batch["reiid"].long(),
+            batch["u_s_renum"].long(), batch["i_s_renum"].long(), batch["u_pos_ind"].long(), batch["i_pos_ind"].long(),
+            batch["u_rel_dt"].long(), batch["i_rel_dt"].long(), batch["u_abs_dt"].float(), batch["i_abs_dt"].float(),
+            batch["nodes"].long(), batch["reviews"].long(), batch["ratings"].float(), batch["adj"].float(), batch["pairs"].long(),
+            batch["user_id"].long(), batch["item_id"].long(), batch["rating"].float(), self.train_clip,
+        )
+        last = getattr(self, "_last_losses", {})
+        return loss, {
+            "mse_loss": float(last.get("mse_loss", torch.tensor(0.0)).item()),
+            "l2_loss": float(last.get("l2_loss", torch.tensor(0.0)).item()),
+            "decov_loss": float(last.get("decov_loss", torch.tensor(0.0)).item()),
+            "mae": float(mae.detach().item()),
+            "rmse": float(rmse.detach().item()),
+            "total_loss": float(loss.detach().item()),
+        }

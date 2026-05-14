@@ -1,621 +1,497 @@
 from __future__ import annotations
 
-# pyright: reportImplicitOverride=false, reportMissingTypeStubs=false, reportExplicitAny=false, reportAny=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportArgumentType=false
+# pyright: reportAny=false, reportExplicitAny=false, reportImplicitOverride=false, reportMissingTypeStubs=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
 
+import copy
+import os
+import pickle
+import random
 import re
+from collections import Counter, defaultdict
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 import torch
 
 from .abstract_dataset import RecDataset
+from .ssg_time import ssg_time_handler
 
 
-Interaction = tuple[int, int, float, float, list[int], str, torch.Tensor]
-ReviewLookup = dict[int, list[Interaction]]
+@dataclass(frozen=True)
+class SSGRecord:
+    user_id: int
+    item_id: int
+    review_text: str
+    rating: float
+    timestamp: float
+
+
+def clean_str(string: object) -> str:
+    text = "" if string is None or (isinstance(string, float) and np.isnan(string)) else str(string)
+    text = re.sub(r"[^A-Za-z]", " ", text)
+    text = re.sub(r"\'s", " \'s", text)
+    text = re.sub(r"\'ve", " \'ve", text)
+    text = re.sub(r"n\'t", " n\'t", text)
+    text = re.sub(r"\'re", " \'re", text)
+    text = re.sub(r"\'d", " \'d", text)
+    text = re.sub(r"\'ll", " \'ll", text)
+    text = re.sub(r",", " , ", text)
+    text = re.sub(r"!", " ! ", text)
+    text = re.sub(r"\(", " ( ", text)
+    text = re.sub(r"\)", " ) ", text)
+    text = re.sub(r"\?", " ? ", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip().lower()
+
+
+def getSubGraph(target_uid: tuple[int, ...], target_iid: tuple[int, ...], neigh_list: Mapping[int, list[tuple[int, int]]], user_num: int, n_hops: int = 2, sample_num: int = 10) -> tuple[dict[int, list[tuple[int, int]]], set[int]]:
+    target_ids: set[int] = set(int(uid) for uid in target_uid)
+    for iid in target_iid:
+        target_ids.add(int(iid) + user_num)
+
+    target_edges: set[int] = set()
+    for _ in range(n_hops):
+        cur_list = list(target_ids)
+        for target_id in cur_list:
+            n_list = copy.deepcopy(neigh_list.get(target_id, []))
+            random.shuffle(n_list)
+            if len(n_list) > sample_num:
+                n_list = n_list[:sample_num]
+            for next_id, next_edge in n_list:
+                target_ids.add(int(next_id))
+                target_edges.add(int(next_edge))
+
+    sub_neigh_list: dict[int, list[tuple[int, int]]] = {}
+    for target_id in target_ids:
+        sub_neigh_list[target_id] = []
+        for next_id, edge_idx in neigh_list.get(target_id, []):
+            if next_id in target_ids and edge_idx in target_edges:
+                sub_neigh_list[target_id].append((int(next_id), int(edge_idx)))
+    return sub_neigh_list, target_ids
 
 
 class SSGDataset(RecDataset):
-    _glove_cache: dict[tuple[str, int, frozenset[str]], torch.Tensor] = {}
-    review_length: int
-    review_count: int
-    seq_count: int
-    word_dim: int
-    glove_path: str
-    retain_rui: bool
-    use_graph_view: bool
-    review_input_mode: str
-    review_dim: int
-    max_rel_bucket: int
-    time_percentile: float
-    user_review_padding_id: int
-    item_review_padding_id: int
-    graph_edge_count: int
-    user_ids: torch.Tensor
-    item_ids: torch.Tensor
-    ratings: torch.Tensor
-    timestamps: torch.Tensor
-    pad_idx: int
-    word_to_idx: dict[str, int]
-    embedding_matrix: torch.Tensor
-    interactions: list[Interaction]
-    review_lookup_by_user: ReviewLookup
-    review_lookup_by_item: ReviewLookup
-    user_review_tensors: torch.Tensor | None
-    item_review_tensors: torch.Tensor | None
-    user_review_item_ids: torch.Tensor | None
-    item_review_user_ids: torch.Tensor | None
-    user_seq_reviews: torch.Tensor | None
-    item_seq_reviews: torch.Tensor | None
-    user_seq_len: torch.Tensor | None
-    item_seq_len: torch.Tensor | None
-    user_pos_ind: torch.Tensor | None
-    item_pos_ind: torch.Tensor | None
-    user_rel_dt: torch.Tensor | None
-    item_rel_dt: torch.Tensor | None
-    user_abs_dt: torch.Tensor | None
-    item_abs_dt: torch.Tensor | None
-    graph_adj: torch.Tensor | None
-    graph_reviews: torch.Tensor | None
-    graph_ratings: torch.Tensor | None
-    graph_nodes: torch.Tensor | None
-    time_scale: float
+    _artifact_cache: dict[str, dict[str, object]] = {}
 
     def __init__(self, df: pd.DataFrame, configs: Mapping[str, object], split: str = "train", train_dataset: SSGDataset | None = None) -> None:
         if "timestamp" not in df.columns:
-            raise ValueError("SSG requires 'timestamp' column in dataset. The .inter file must have 'timestamp:float' column.")
-
+            raise ValueError("SSG requires a timestamp column.")
+        if "reviewText" not in df.columns:
+            raise ValueError("SSG requires reviewText; set use_review_text: true.")
         super().__init__(df, configs, split)
-        self.review_length = self._coerce_int(configs.get("review_length", 40), 40)
-        self.review_count = self._coerce_int(configs.get("review_count", 10), 10)
-        self.seq_count = self._coerce_int(configs.get("seq_count", self.review_count), self.review_count)
-        self.word_dim = self._coerce_int(configs.get("word_dim", 300), 300)
-        self.glove_path = self._coerce_str(
-            configs.get(
-                "glove_path",
-                "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt",
-            ),
-            "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt",
-        )
-        self.retain_rui = self._coerce_bool(configs.get("retain_rui", False), False)
-        self.use_graph_view = self._coerce_bool(configs.get("use_graph_view", False), False)
-        preset = self._coerce_str(configs.get("ssg_preset", "custom"), "custom")
-        if preset in {"set_only", "set_sequence"}:
-            self.use_graph_view = False
-        elif preset in {"set_graph", "full", "no_decov"}:
-            self.use_graph_view = True
-        self.review_input_mode = self._coerce_str(configs.get("review_input_mode", "token"), "token")
-        if self.review_input_mode not in {"token", "embedding"}:
-            raise ValueError("review_input_mode must be 'token' or 'embedding'.")
-        self.review_dim = self._coerce_int(configs.get("review_dim", configs.get("bert_whitening_dim", 64)), 64)
-        self.max_rel_bucket = self._coerce_int(configs.get("max_rel_bucket", 100), 100)
-        self.time_percentile = float(configs.get("time_percentile", 10.0))
 
-        self.user_review_padding_id = self.num_users
-        self.item_review_padding_id = self.num_items
-        self.graph_edge_count = max(1, self.review_count * 2)
+        self.percentile = float(configs.get("time_percentile", configs.get("percentile", 10)))
+        self.max_rel = int(configs.get("max_rel_bucket", configs.get("max_rel", 100)))
+        self.n_hops = int(configs.get("n_hops", 2))
+        self.sample_num = int(configs.get("sample_num", 10))
+        self.max_rating = int(configs.get("max_rating", 5))
+        self.cache_enabled = self._coerce_bool(configs.get("ssg_cache", True), True)
 
-        self.user_ids = torch.tensor(df["user_id"].tolist(), dtype=torch.long)
-        self.item_ids = torch.tensor(df["item_id"].tolist(), dtype=torch.long)
-        self.ratings = torch.tensor(df["rating"].tolist(), dtype=torch.float32)
-        self.timestamps = torch.tensor(df["timestamp"].tolist(), dtype=torch.float32)
-
-        self.pad_idx = 0
-        if train_dataset is not None:
-            self.pad_idx = train_dataset.pad_idx
-            self.word_to_idx = train_dataset.word_to_idx
-            self.embedding_matrix = train_dataset.embedding_matrix.clone()
-        elif self.review_input_mode == "token":
-            vocab_tokens = self._collect_vocab_tokens(df)
-            self.word_to_idx = self._build_word_to_idx(vocab_tokens)
-            self.embedding_matrix = self._load_glove(
-                self.glove_path,
-                self.word_dim,
-                vocab_tokens,
-                self.word_to_idx,
-            )
+        if train_dataset is None:
+            artifacts = self._build_or_load_artifacts(df)
         else:
-            self.word_to_idx = {"<pad>": self.pad_idx}
-            self.embedding_matrix = torch.zeros((1, self.word_dim), dtype=torch.float32)
+            artifacts = train_dataset.artifacts
 
-        self.interactions = self._build_interactions(df)
-        self.review_lookup_by_user = self._build_review_lookups(self.interactions, use_user_key=True)
-        self.review_lookup_by_item = self._build_review_lookups(self.interactions, use_user_key=False)
+        self.artifacts = artifacts
+        self.para = artifacts["para"]
+        self.graph_info = artifacts["graph_info"]
 
-        self.user_review_tensors = None
-        self.item_review_tensors = None
-        self.user_review_item_ids = None
-        self.item_review_user_ids = None
-        self.user_seq_reviews = None
-        self.item_seq_reviews = None
-        self.user_seq_len = None
-        self.item_seq_len = None
-        self.user_pos_ind = None
-        self.item_pos_ind = None
-        self.user_rel_dt = None
-        self.item_rel_dt = None
-        self.user_abs_dt = None
-        self.item_abs_dt = None
-        self.graph_adj = None
-        self.graph_reviews = None
-        self.graph_ratings = None
-        self.graph_nodes = None
-        self.time_scale = 1.0
+        self.user_num = int(self.para["user_num"])
+        self.item_num = int(self.para["item_num"])
+        self.node_num = self.user_num + self.item_num
+        self.num_users = self.user_num
+        self.num_items = self.item_num
 
-        if train_dataset is not None:
-            self.graph_adj = train_dataset.graph_adj
-            self.graph_reviews = train_dataset.graph_reviews
-            self.graph_ratings = train_dataset.graph_ratings
-            self.graph_nodes = train_dataset.graph_nodes
-            self.time_scale = train_dataset.time_scale
+        self.review_num_u = int(self.para["review_num_u"])
+        self.review_num_i = int(self.para["review_num_i"])
+        self.review_len_u = int(self.para["review_len_u"])
+        self.review_len_i = int(self.para["review_len_i"])
+        self.review_len_g = self.review_len_u
+        self.review_count = self.review_num_u
+        self.review_length = self.review_len_u
 
-        if split == "train":
-            self._initialize_context(self.interactions, self.review_lookup_by_user, self.review_lookup_by_item)
+        self.user_vocab = self.para["user_vocab"]
+        self.item_vocab = self.para["item_vocab"]
+        self.vocabulary_user = self.user_vocab
+        self.vocabulary_item = self.item_vocab
+        self.vocabulary = self.graph_info["vocabulary"]
+        self.pad_idx = int(self.user_vocab.get("<PAD/>", 0))
+        self.embedding_matrix = torch.empty((1, int(configs.get("word_dim", 300))), dtype=torch.float32)
 
-    @classmethod
-    def _load_glove(
-        cls,
-        glove_path: str,
-        word_dim: int,
-        vocab_tokens: set[str],
-        word_to_idx: dict[str, int],
-    ) -> torch.Tensor:
-        cache_key = (glove_path, word_dim, frozenset(vocab_tokens))
-        if cache_key in cls._glove_cache:
-            return cls._glove_cache[cache_key]
+        self.u_text = self.para["u_text"]
+        self.i_text = self.para["i_text"]
+        self.u_time = self.para["u_time"]
+        self.i_time = self.para["i_time"]
+        self.neigh_list = self.graph_info["neigh_list"]
+        self.edge_id1 = self.graph_info["edge_id1"]
+        self.edge_id2 = self.graph_info["edge_id2"]
+        self.edge_ratings = self.graph_info["edge_ratings"]
+        self.edge_reviews = self.graph_info["edge_reviews"]
 
-        embedding_matrix = torch.randn(len(word_to_idx), word_dim, dtype=torch.float32) * 0.01
-        embedding_matrix[0] = 0.0
-
-        with open(glove_path, "r", encoding="utf-8") as glove_file:
-            for line_idx, line in enumerate(glove_file):
-                parts = line.rstrip().split()
-                if line_idx == 0 and len(parts) == 2 and all(part.lstrip("+-").isdigit() for part in parts):
-                    continue
-                if len(parts) != word_dim + 1:
-                    continue
-                token = parts[0]
-                if token not in vocab_tokens:
-                    continue
-                embedding_matrix[word_to_idx[token]] = torch.tensor([float(value) for value in parts[1:]], dtype=torch.float32)
-
-        cls._glove_cache[cache_key] = embedding_matrix
-        return embedding_matrix
-
-    @classmethod
-    def _collect_vocab_tokens(cls, df: pd.DataFrame) -> set[str]:
-        vocab_tokens: set[str] = set()
-        for row in df.itertuples(index=False):
-            vocab_tokens.update(cls._tokenize(cls._normalize_text(getattr(row, "reviewText", ""))))
-        return vocab_tokens
-
-    @staticmethod
-    def _build_word_to_idx(vocab_tokens: set[str]) -> dict[str, int]:
-        word_to_idx = {"<pad>": 0}
-        for idx, token in enumerate(sorted(vocab_tokens), start=1):
-            word_to_idx[token] = idx
-        return word_to_idx
-
-    @staticmethod
-    def _coerce_int(value: object, default: int) -> int:
-        if value is None:
-            return default
-        return int(value)
+        self.samples = self._build_samples(df)
+        self.user_ids = torch.tensor([sample[0] for sample in self.samples], dtype=torch.long)
+        self.item_ids = torch.tensor([sample[1] for sample in self.samples], dtype=torch.long)
+        self.ratings = torch.tensor([sample[4] for sample in self.samples], dtype=torch.float32)
 
     @staticmethod
     def _coerce_bool(value: object, default: bool) -> bool:
         if value is None:
             return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
         return bool(value)
 
-    @staticmethod
-    def _coerce_str(value: object, default: str) -> str:
-        if value is None:
-            return default
-        return str(value)
+    def _cache_path(self, df: pd.DataFrame) -> str:
+        dataset = str(self.configs.get("dataset", "unknown"))
+        seed = int(self.configs.get("seed", 42))
+        signature = f"n{len(df)}_u{int(df['user_id'].sum())}_i{int(df['item_id'].sum())}_r{int(float(df['rating'].sum()) * 1000)}"
+        cache_dir = os.path.join(str(self.configs.get("embedding_path", "cached/embedding")), dataset, "ssg_original")
+        return os.path.join(cache_dir, f"para_graph_seed{seed}_{signature}.pkl")
 
-    @staticmethod
-    def _normalize_text(text: object) -> str:
-        if text is None:
-            return ""
-        if isinstance(text, (float, np.floating)) and np.isnan(text):
-            return ""
-        return str(text).strip().lower()
+    def _build_or_load_artifacts(self, df: pd.DataFrame) -> dict[str, object]:
+        cache_path = self._cache_path(df)
+        if self.cache_enabled and cache_path in self._artifact_cache:
+            return self._artifact_cache[cache_path]
+        if self.cache_enabled and os.path.exists(cache_path):
+            with open(cache_path, "rb") as handle:
+                loaded = pickle.load(handle)
+            self._artifact_cache[cache_path] = loaded
+            print(f"Loaded SSG para/graph_info cache from {cache_path}")
+            return loaded
 
-    @staticmethod
-    def _tokenize(text: str) -> list[str]:
-        return re.findall(r"[a-z0-9']+", text)
+        records = self._records_from_df(df)
+        para = self._build_para(records)
+        graph_info = self._build_graph_info(records, para)
+        artifacts: dict[str, object] = {"para": para, "graph_info": graph_info}
+        if self.cache_enabled:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, "wb") as handle:
+                pickle.dump(artifacts, handle, protocol=2)
+            self._artifact_cache[cache_path] = artifacts
+            print(f"Saved SSG para/graph_info cache to {cache_path}")
+        return artifacts
 
-    def _tokens_to_ids(self, text: str) -> list[int]:
-        return [self.word_to_idx.get(token, self.pad_idx) for token in self._tokenize(text)]
-
-    def _build_interactions(self, frame: pd.DataFrame) -> list[Interaction]:
-        interactions: list[Interaction] = []
-        for row in frame.itertuples(index=False):
-            review_text = self._normalize_text(getattr(row, "reviewText", ""))
-            interactions.append(
-                (
-                    int(getattr(row, "user_id")),
-                    int(getattr(row, "item_id")),
-                    float(getattr(row, "rating")),
-                    float(getattr(row, "timestamp")),
-                    self._tokens_to_ids(review_text),
-                    review_text,
-                    self._row_review_embedding(row),
+    def _records_from_df(self, df: pd.DataFrame) -> list[SSGRecord]:
+        records: list[SSGRecord] = []
+        for row in df.itertuples(index=False):
+            records.append(
+                SSGRecord(
+                    user_id=int(getattr(row, "user_id")),
+                    item_id=int(getattr(row, "item_id")),
+                    review_text=str(getattr(row, "reviewText", "")),
+                    rating=float(getattr(row, "rating")),
+                    timestamp=float(getattr(row, "timestamp")),
                 )
             )
-        return interactions
-
-    def _row_review_embedding(self, row: object) -> torch.Tensor:
-        if self.review_input_mode != "embedding":
-            return torch.zeros(self.review_dim, dtype=torch.float32)
-        value = getattr(row, "review_embedding", None)
-        if isinstance(value, torch.Tensor):
-            embedding = value.float().view(-1)
-        elif value is None or (isinstance(value, float) and np.isnan(value)):
-            embedding = torch.zeros(self.review_dim, dtype=torch.float32)
-        else:
-            embedding = torch.tensor(value, dtype=torch.float32).view(-1)
-        if embedding.numel() != self.review_dim:
-            raise ValueError(f"SSG embedding mode expected review_dim={self.review_dim}, got {embedding.numel()}.")
-        return embedding
+        return records
 
     @staticmethod
-    def _build_review_lookups(interactions: list[Interaction], use_user_key: bool) -> ReviewLookup:
-        review_lookup: ReviewLookup = {}
-        for interaction in interactions:
-            key = interaction[0] if use_user_key else interaction[1]
-            review_lookup.setdefault(key, []).append(interaction)
-        return review_lookup
+    def _percentile_len(lengths: list[int]) -> int:
+        if not lengths:
+            return 1
+        sorted_lengths = np.sort(np.asarray(lengths, dtype=np.int64))
+        idx = max(int(0.9 * len(sorted_lengths)) - 1, 0)
+        return max(int(sorted_lengths[idx]), 1)
 
-    @staticmethod
-    def _is_target_interaction(interaction: Interaction, user_id: int, item_id: int) -> bool:
-        return interaction[0] == int(user_id) and interaction[1] == int(item_id)
+    def _build_para(self, records: list[SSGRecord]) -> dict[str, object]:
+        user_meta: dict[int, list[tuple[int, str, float]]] = defaultdict(list)
+        item_meta: dict[int, list[tuple[int, str, float]]] = defaultdict(list)
+        for record in records:
+            user_meta[record.user_id].append((record.item_id, record.review_text, record.timestamp))
+            item_meta[record.item_id].append((record.user_id, record.review_text, record.timestamp))
 
-    def _initialize_context(
-        self,
-        history_interactions: list[Interaction],
-        review_lookup_by_user: ReviewLookup,
-        review_lookup_by_item: ReviewLookup,
-    ) -> None:
-        (
-            self.user_review_tensors,
-            self.item_review_tensors,
-            self.user_review_item_ids,
-            self.item_review_user_ids,
-        ) = self._build_set_context_tensors(self.interactions, review_lookup_by_user, review_lookup_by_item)
+        user_tokens: dict[int, list[tuple[list[str], float]]] = {}
+        item_tokens: dict[int, list[tuple[list[str], float]]] = {}
+        user_rids: dict[int, list[int]] = {}
+        item_rids: dict[int, list[int]] = {}
+        future_time = self._future_padding_time(records)
 
-        self.time_scale = self._estimate_time_scale(self.interactions, review_lookup_by_user, review_lookup_by_item)
-        (
-            self.user_seq_reviews,
-            self.item_seq_reviews,
-            self.user_seq_len,
-            self.item_seq_len,
-            self.user_pos_ind,
-            self.item_pos_ind,
-            self.user_rel_dt,
-            self.item_rel_dt,
-            self.user_abs_dt,
-            self.item_abs_dt,
-        ) = self._build_sequence_context_tensors(self.interactions, review_lookup_by_user, review_lookup_by_item, self.time_scale)
+        for uid in range(self.num_users):
+            entries = sorted(user_meta.get(uid, []), key=lambda entry: entry[2])
+            if not entries:
+                user_tokens[uid] = [(["<PAD/>"], future_time)]
+                user_rids[uid] = [self.num_items + 1]
+                continue
+            user_tokens[uid] = [(clean_str(text).split(" ") if clean_str(text) else ["<PAD/>"], timestamp) for _, text, timestamp in entries]
+            user_rids[uid] = [int(item_id) for item_id, _, _ in entries]
 
-        if self.use_graph_view:
-            if self.split == "train" or self.graph_adj is None or self.graph_reviews is None or self.graph_ratings is None:
-                self.graph_nodes, self.graph_adj, self.graph_reviews, self.graph_ratings = self._build_full_graph_tensors(history_interactions)
-        else:
-            self.graph_nodes = None
-            self.graph_adj = None
-            self.graph_reviews = None
-            self.graph_ratings = None
+        for iid in range(self.num_items):
+            entries = sorted(item_meta.get(iid, []), key=lambda entry: entry[2])
+            if not entries:
+                item_tokens[iid] = [(["<PAD/>"], future_time)]
+                item_rids[iid] = [self.num_users + 1]
+                continue
+            item_tokens[iid] = [(clean_str(text).split(" ") if clean_str(text) else ["<PAD/>"], timestamp) for _, text, timestamp in entries]
+            item_rids[iid] = [int(user_id) for user_id, _, _ in entries]
 
-    def _adjust_review_tokens(self, reviews: list[list[int]], limit: int) -> list[list[int]]:
-        adjusted = reviews[:limit]
-        if len(adjusted) < limit:
-            adjusted = adjusted + [[self.pad_idx] * self.review_length for _ in range(limit - len(adjusted))]
-        return [review[: self.review_length] + [self.pad_idx] * max(0, self.review_length - len(review)) for review in adjusted]
+        u_len = self._percentile_len([len(values) for values in user_tokens.values()])
+        i_len = self._percentile_len([len(values) for values in item_tokens.values()])
+        min_review_len = max(self._config_filter_sizes())
+        u2_len = max(self._percentile_len([len(tokens) for values in user_tokens.values() for tokens, _ in values]), min_review_len)
+        i2_len = max(self._percentile_len([len(tokens) for values in item_tokens.values() for tokens, _ in values]), min_review_len)
 
-    def _adjust_review_embeddings(self, reviews: list[torch.Tensor], limit: int) -> torch.Tensor:
-        adjusted = reviews[:limit]
-        if len(adjusted) < limit:
-            adjusted = adjusted + [torch.zeros(self.review_dim, dtype=torch.float32) for _ in range(limit - len(adjusted))]
-        return torch.stack([review.float().view(-1) for review in adjusted], dim=0)
+        padded_user = self._pad_sentences(user_tokens, u_len, u2_len, future_time)
+        padded_item = self._pad_sentences(item_tokens, i_len, i2_len, future_time)
+        user_vocab, item_vocab = self._build_dual_vocab(padded_user, padded_item)
+        u_text, u_time = self._build_input_data(padded_user, user_vocab)
+        i_text, i_time = self._build_input_data(padded_item, item_vocab)
 
-    def _adjust_side_ids(self, side_ids: list[int], limit: int, padding_id: int) -> list[int]:
-        adjusted = side_ids[:limit]
-        if len(adjusted) < limit:
-            adjusted = adjusted + [padding_id] * (limit - len(adjusted))
-        return adjusted
-
-    def _select_set_entries(self, lookup: ReviewLookup, query_id: int, user_id: int, item_id: int) -> list[Interaction]:
-        entries = lookup.get(int(query_id), [])
-        if self.retain_rui:
-            return list(entries)
-        return [entry for entry in entries if not self._is_target_interaction(entry, user_id, item_id)]
-
-    def _select_sequence_entries(
-        self,
-        lookup: ReviewLookup,
-        query_id: int,
-        user_id: int,
-        item_id: int,
-        target_ts: float,
-    ) -> list[Interaction]:
-        filtered = [entry for entry in lookup.get(int(query_id), []) if entry[3] <= float(target_ts)]
-        if not self.retain_rui:
-            filtered = [entry for entry in filtered if not self._is_target_interaction(entry, user_id, item_id)]
-        filtered.sort(key=lambda entry: entry[3], reverse=True)
-        return filtered
-
-    def _build_set_context_tensors(
-        self,
-        target_interactions: list[Interaction],
-        review_lookup_by_user: ReviewLookup,
-        review_lookup_by_item: ReviewLookup,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        user_reviews: list[torch.Tensor] = []
-        item_reviews: list[torch.Tensor] = []
-        user_review_item_ids: list[torch.Tensor] = []
-        item_review_user_ids: list[torch.Tensor] = []
-
-        for user_id, item_id, _, _, _, _, _ in target_interactions:
-            user_entries = self._select_set_entries(review_lookup_by_user, user_id, user_id, item_id)
-            item_entries = self._select_set_entries(review_lookup_by_item, item_id, user_id, item_id)
-
-            if self.review_input_mode == "embedding":
-                user_reviews.append(self._adjust_review_embeddings([entry[6] for entry in user_entries], self.review_count))
-                item_reviews.append(self._adjust_review_embeddings([entry[6] for entry in item_entries], self.review_count))
-            else:
-                user_reviews.append(
-                    torch.tensor(self._adjust_review_tokens([entry[4] for entry in user_entries], self.review_count), dtype=torch.long)
-                )
-                item_reviews.append(
-                    torch.tensor(self._adjust_review_tokens([entry[4] for entry in item_entries], self.review_count), dtype=torch.long)
-                )
-            user_review_item_ids.append(
-                torch.tensor(
-                    self._adjust_side_ids([entry[1] for entry in user_entries], self.review_count, self.item_review_padding_id),
-                    dtype=torch.long,
-                )
-            )
-            item_review_user_ids.append(
-                torch.tensor(
-                    self._adjust_side_ids([entry[0] for entry in item_entries], self.review_count, self.user_review_padding_id),
-                    dtype=torch.long,
-                )
-            )
-
-        return (
-            torch.stack(user_reviews),
-            torch.stack(item_reviews),
-            torch.stack(user_review_item_ids),
-            torch.stack(item_review_user_ids),
-        )
-
-    def _build_sequence_features(
-        self,
-        entries: list[Interaction],
-        target_ts: float,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        limited_entries = entries[: self.seq_count]
-        seq_len = torch.tensor(min(len(entries), self.seq_count), dtype=torch.long)
-
-        if self.review_input_mode == "embedding":
-            reviews_tensor = self._adjust_review_embeddings([entry[6] for entry in limited_entries], self.seq_count)
-        else:
-            reviews_tensor = torch.tensor(self._adjust_review_tokens([entry[4] for entry in limited_entries], self.seq_count), dtype=torch.long)
-        seq_len_value = len(limited_entries)
-        pos_ind = [seq_len_value - position for position in range(seq_len_value)]
-        rel_dt = [min(int(max(float(target_ts) - entry[3], 0.0) / self.time_scale), self.max_rel_bucket) for entry in limited_entries]
-        abs_dt = [entry[3] for entry in limited_entries]
-
-        if len(pos_ind) < self.seq_count:
-            pad_size = self.seq_count - len(pos_ind)
-            pos_ind.extend([0] * pad_size)
-            rel_dt.extend([0] * pad_size)
-            abs_dt.extend([0.0] * pad_size)
-
-        return (
-            reviews_tensor,
-            seq_len,
-            torch.tensor(pos_ind, dtype=torch.long),
-            torch.tensor(rel_dt, dtype=torch.long),
-            torch.tensor(abs_dt, dtype=torch.float32),
-        )
-
-    def _build_sequence_context_tensors(
-        self,
-        target_interactions: list[Interaction],
-        review_lookup_by_user: ReviewLookup,
-        review_lookup_by_item: ReviewLookup,
-        time_scale: float,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        del time_scale
-        user_seq_reviews: list[torch.Tensor] = []
-        item_seq_reviews: list[torch.Tensor] = []
-        user_seq_len: list[torch.Tensor] = []
-        item_seq_len: list[torch.Tensor] = []
-        user_pos_ind: list[torch.Tensor] = []
-        item_pos_ind: list[torch.Tensor] = []
-        user_rel_dt: list[torch.Tensor] = []
-        item_rel_dt: list[torch.Tensor] = []
-        user_abs_dt: list[torch.Tensor] = []
-        item_abs_dt: list[torch.Tensor] = []
-
-        for user_id, item_id, _, timestamp, _, _, _ in target_interactions:
-            user_entries = self._select_sequence_entries(review_lookup_by_user, user_id, user_id, item_id, timestamp)
-            item_entries = self._select_sequence_entries(review_lookup_by_item, item_id, user_id, item_id, timestamp)
-
-            user_reviews, user_len, user_pos, user_rel, user_abs = self._build_sequence_features(user_entries, timestamp)
-            item_reviews, item_len, item_pos, item_rel, item_abs = self._build_sequence_features(item_entries, timestamp)
-
-            user_seq_reviews.append(user_reviews)
-            item_seq_reviews.append(item_reviews)
-            user_seq_len.append(user_len)
-            item_seq_len.append(item_len)
-            user_pos_ind.append(user_pos)
-            item_pos_ind.append(item_pos)
-            user_rel_dt.append(user_rel)
-            item_rel_dt.append(item_rel)
-            user_abs_dt.append(user_abs)
-            item_abs_dt.append(item_abs)
-
-        return (
-            torch.stack(user_seq_reviews),
-            torch.stack(item_seq_reviews),
-            torch.stack(user_seq_len),
-            torch.stack(item_seq_len),
-            torch.stack(user_pos_ind),
-            torch.stack(item_pos_ind),
-            torch.stack(user_rel_dt),
-            torch.stack(item_rel_dt),
-            torch.stack(user_abs_dt),
-            torch.stack(item_abs_dt),
-        )
-
-    def _estimate_time_scale(
-        self,
-        target_interactions: list[Interaction],
-        review_lookup_by_user: ReviewLookup,
-        review_lookup_by_item: ReviewLookup,
-    ) -> float:
-        non_zero_rel_dt: list[float] = []
-
-        for user_id, item_id, _, timestamp, _, _, _ in target_interactions:
-            for entries, query_id in ((review_lookup_by_user, user_id), (review_lookup_by_item, item_id)):
-                for entry in self._select_sequence_entries(entries, query_id, user_id, item_id, timestamp):
-                    rel_dt = float(timestamp) - entry[3]
-                    if rel_dt > 0.0:
-                        non_zero_rel_dt.append(rel_dt)
-
-        if not non_zero_rel_dt:
-            return 1.0
-        return max(float(np.percentile(np.asarray(non_zero_rel_dt, dtype=np.float32), self.time_percentile)), 1.0)
-
-    def _build_full_graph_tensors(self, interactions: list[Interaction]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        edge_index = torch.empty((2, len(interactions)), dtype=torch.long)
-        if self.review_input_mode == "embedding":
-            edge_reviews = torch.zeros((len(interactions), self.review_dim), dtype=torch.float32)
-        else:
-            edge_reviews = torch.full((len(interactions), self.review_length), self.pad_idx, dtype=torch.long)
-        edge_ratings = torch.zeros(len(interactions), dtype=torch.float32)
-
-        for edge_idx, entry in enumerate(interactions):
-            edge_index[0, edge_idx] = entry[0]
-            edge_index[1, edge_idx] = self.num_users + entry[1]
-            if self.review_input_mode == "embedding":
-                edge_reviews[edge_idx] = entry[6]
-            else:
-                edge_reviews[edge_idx] = torch.tensor(self._adjust_review_tokens([entry[4]], 1)[0], dtype=torch.long)
-            edge_ratings[edge_idx] = float(entry[2])
-
-        graph_nodes = torch.arange(self.num_users + self.num_items, dtype=torch.long)
-        return graph_nodes, edge_index, edge_reviews, edge_ratings
-
-    def _setup_evaluation(self, train_df: pd.DataFrame, valid_df: pd.DataFrame, test_df: pd.DataFrame) -> None:
-        del valid_df, test_df
-        if self.split not in {"valid", "test"}:
-            return
-
-        if "timestamp" not in train_df.columns:
-            raise ValueError("SSG requires 'timestamp' column in dataset. The .inter file must have 'timestamp:float' column.")
-
-        history_interactions = self._build_interactions(train_df)
-        review_lookup_by_user = self._build_review_lookups(history_interactions, use_user_key=True)
-        review_lookup_by_item = self._build_review_lookups(history_interactions, use_user_key=False)
-        self._initialize_context(history_interactions, review_lookup_by_user, review_lookup_by_item)
-
-    def __len__(self) -> int:
-        return len(self.user_ids)
-
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        required_tensors = (
-            self.user_review_tensors,
-            self.item_review_tensors,
-            self.user_review_item_ids,
-            self.item_review_user_ids,
-            self.user_seq_reviews,
-            self.item_seq_reviews,
-            self.user_seq_len,
-            self.item_seq_len,
-            self.user_pos_ind,
-            self.item_pos_ind,
-            self.user_rel_dt,
-            self.item_rel_dt,
-            self.user_abs_dt,
-            self.item_abs_dt,
-        )
-        if any(tensor is None for tensor in required_tensors):
-            raise RuntimeError("SSG context tensors must be initialized before accessing samples.")
-
-        user_review_tensors = self.user_review_tensors
-        item_review_tensors = self.item_review_tensors
-        user_review_item_ids = self.user_review_item_ids
-        item_review_user_ids = self.item_review_user_ids
-        user_seq_reviews = self.user_seq_reviews
-        item_seq_reviews = self.item_seq_reviews
-        user_seq_len = self.user_seq_len
-        item_seq_len = self.item_seq_len
-        user_pos_ind = self.user_pos_ind
-        item_pos_ind = self.item_pos_ind
-        user_rel_dt = self.user_rel_dt
-        item_rel_dt = self.item_rel_dt
-        user_abs_dt = self.user_abs_dt
-        item_abs_dt = self.item_abs_dt
-
-        assert user_review_tensors is not None
-        assert item_review_tensors is not None
-        assert user_review_item_ids is not None
-        assert item_review_user_ids is not None
-        assert user_seq_reviews is not None
-        assert item_seq_reviews is not None
-        assert user_seq_len is not None
-        assert item_seq_len is not None
-        assert user_pos_ind is not None
-        assert item_pos_ind is not None
-        assert user_rel_dt is not None
-        assert item_rel_dt is not None
-        assert user_abs_dt is not None
-        assert item_abs_dt is not None
-
-        sample: dict[str, torch.Tensor] = {
-            "user_id": self.user_ids[idx].clone().detach(),
-            "item_id": self.item_ids[idx].clone().detach(),
-            "rating": self.ratings[idx].clone().detach(),
-            "user_review": user_review_tensors[idx].clone().detach(),
-            "item_review": item_review_tensors[idx].clone().detach(),
-            "user_review_item_ids": user_review_item_ids[idx].clone().detach(),
-            "item_review_user_ids": item_review_user_ids[idx].clone().detach(),
-            "user_seq_reviews": user_seq_reviews[idx].clone().detach(),
-            "item_seq_reviews": item_seq_reviews[idx].clone().detach(),
-            "user_seq_len": user_seq_len[idx].clone().detach(),
-            "item_seq_len": item_seq_len[idx].clone().detach(),
-            "user_pos_ind": user_pos_ind[idx].clone().detach(),
-            "item_pos_ind": item_pos_ind[idx].clone().detach(),
-            "user_rel_dt": user_rel_dt[idx].clone().detach(),
-            "item_rel_dt": item_rel_dt[idx].clone().detach(),
-            "user_abs_dt": user_abs_dt[idx].clone().detach(),
-            "item_abs_dt": item_abs_dt[idx].clone().detach(),
+        return {
+            "user_num": self.num_users,
+            "item_num": self.num_items,
+            "review_num_u": int(next(iter(u_text.values())).shape[0]),
+            "review_num_i": int(next(iter(i_text.values())).shape[0]),
+            "review_len_u": int(next(iter(u_text.values())).shape[1]),
+            "review_len_i": int(next(iter(i_text.values())).shape[1]),
+            "user_vocab": user_vocab,
+            "item_vocab": item_vocab,
+            "u_text": u_text,
+            "i_text": i_text,
+            "u_time": u_time,
+            "i_time": i_time,
+            "user_rid": user_rids,
+            "item_rid": item_rids,
         }
 
-        if self.use_graph_view:
-            if self.graph_adj is None or self.graph_reviews is None or self.graph_ratings is None:
-                raise RuntimeError("Graph tensors must be initialized when use_graph_view=True.")
-            sample["graph_adj"] = self.graph_adj
-            sample["graph_reviews"] = self.graph_reviews
-            sample["graph_ratings"] = self.graph_ratings
+    def _config_filter_sizes(self) -> list[int]:
+        value = self.configs.get("filter_sizes", [3])
+        if isinstance(value, str):
+            parsed = [int(part.strip()) for part in value.strip().strip("[]").split(",") if part.strip()]
+            return parsed or [3]
+        if isinstance(value, (list, tuple)):
+            return [int(part) for part in value] or [3]
+        return [3]
 
-        return sample
+    @staticmethod
+    def _future_padding_time(records: list[SSGRecord]) -> float:
+        if not records:
+            return 1.0
+        return max(record.timestamp for record in records) + 1.0
+
+    @staticmethod
+    def _pad_sentences(text: dict[int, list[tuple[list[str], float]]], review_num: int, review_len: int, future_time: float) -> dict[int, list[tuple[list[str], float]]]:
+        padded: dict[int, list[tuple[list[str], float]]] = {}
+        for key, reviews in text.items():
+            rows: list[tuple[list[str], float]] = []
+            for ridx in range(review_num):
+                if ridx < len(reviews):
+                    tokens, timestamp = reviews[ridx]
+                    new_tokens = tokens[:review_len] + ["<PAD/>"] * max(0, review_len - len(tokens))
+                    rows.append((new_tokens, float(timestamp)))
+                else:
+                    rows.append((["<PAD/>"] * review_len, future_time))
+            rows.insert(0, (["<PAD/>"] * review_len, 0.0))
+            padded[key] = rows
+        return padded
+
+    @staticmethod
+    def _build_dual_vocab(user_text: dict[int, list[tuple[list[str], float]]], item_text: dict[int, list[tuple[list[str], float]]]) -> tuple[dict[str, int], dict[str, int]]:
+        user_words = [tokens for reviews in user_text.values() for tokens, _ in reviews]
+        item_words = [tokens for reviews in item_text.values() for tokens, _ in reviews]
+
+        def build_vocab(sentences: list[list[str]]) -> dict[str, int]:
+            counts = Counter(word for sentence in sentences for word in sentence)
+            vocab_inv = sorted([word for word, _ in counts.most_common()])
+            return {word: idx for idx, word in enumerate(vocab_inv)}
+
+        return build_vocab(user_words), build_vocab(item_words)
+
+    @staticmethod
+    def _build_input_data(text: dict[int, list[tuple[list[str], float]]], vocab: Mapping[str, int]) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
+        text_ids: dict[int, np.ndarray] = {}
+        time_ids: dict[int, np.ndarray] = {}
+        pad_id = int(vocab.get("<PAD/>", 0))
+        for key, reviews in text.items():
+            text_ids[key] = np.asarray([[int(vocab.get(word, pad_id)) for word in tokens] for tokens, _ in reviews], dtype=np.int64)
+            time_ids[key] = np.asarray([[float(timestamp)] for _, timestamp in reviews], dtype=np.float32)
+        return text_ids, time_ids
+
+    def _build_graph_info(self, records: list[SSGRecord], para: Mapping[str, object]) -> dict[str, object]:
+        review_len = int(para["review_len_u"])
+        edge_reviews_words: list[list[str]] = []
+        edge_ratings: list[int] = []
+        edge_id1: list[int] = []
+        edge_id2: list[int] = []
+        neigh_list: defaultdict[int, list[tuple[int, int]]] = defaultdict(list)
+        for edge_idx, record in enumerate(records):
+            review = clean_str(record.review_text).split(" ") if clean_str(record.review_text) else ["<PAD/>"]
+            review = review[:review_len] + ["<PAD/>"] * max(0, review_len - len(review))
+            rating = int(float(record.rating))
+            edge_id1.append(record.user_id)
+            edge_id2.append(record.item_id)
+            edge_ratings.append(max(1, min(self.max_rating, rating)))
+            edge_reviews_words.append(review)
+            neigh_list[record.user_id].append((record.item_id + self.num_users, edge_idx))
+            neigh_list[record.item_id + self.num_users].append((record.user_id, edge_idx))
+        vocabulary = self._build_single_vocab(edge_reviews_words)
+        pad_id = int(vocabulary.get("<PAD/>", 0))
+        edge_reviews = [[int(vocabulary.get(word, pad_id)) for word in review] for review in edge_reviews_words]
+        for node in range(self.num_users + self.num_items):
+            neigh_list[node] = neigh_list[node]
+        return {
+            "neigh_list": dict(neigh_list),
+            "edge_id1": edge_id1,
+            "edge_id2": edge_id2,
+            "edge_ratings": edge_ratings,
+            "edge_reviews": edge_reviews,
+            "vocabulary": vocabulary,
+        }
+
+    @staticmethod
+    def _build_single_vocab(sentences: list[list[str]]) -> dict[str, int]:
+        counts = Counter(word for sentence in sentences for word in sentence)
+        vocab_inv = sorted([word for word, _ in counts.most_common()])
+        return {word: idx for idx, word in enumerate(vocab_inv)}
+
+    def _build_samples(self, df: pd.DataFrame) -> list[tuple[int, int, list[int], list[int], float, float]]:
+        user_rid = self.para["user_rid"]
+        item_rid = self.para["item_rid"]
+        samples: list[tuple[int, int, list[int], list[int], float, float]] = []
+        for row in df.itertuples(index=False):
+            uid = int(getattr(row, "user_id"))
+            iid = int(getattr(row, "item_id"))
+            reuid = self._pad_review_ids(list(user_rid.get(uid, [self.num_items + 1])), self.review_num_u, self.num_items + 1)
+            reiid = self._pad_review_ids(list(item_rid.get(iid, [self.num_users + 1])), self.review_num_i, self.num_users + 1)
+            samples.append((uid, iid, reuid, reiid, float(getattr(row, "rating")), float(getattr(row, "timestamp"))))
+        return samples
+
+    @staticmethod
+    def _pad_review_ids(ids: list[int], target_len_with_sentinel: int, pad_value: int) -> list[int]:
+        limit = max(target_len_with_sentinel - 1, 0)
+        values = ids[:limit] + [pad_value] * max(0, limit - len(ids))
+        values.insert(0, pad_value)
+        return values
+
+    def _setup_evaluation(self, train_df: pd.DataFrame, valid_df: pd.DataFrame, test_df: pd.DataFrame) -> None:
+        del train_df, valid_df, test_df
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> dict[str, object]:
+        uid, iid, reuid, reiid, y, timestamp = self.samples[idx]
+        u_s_renum, u_pos_ind, u_rel_dt, u_abs_dt = ssg_time_handler(self.u_time[uid], timestamp, self.percentile, self.max_rel)
+        i_s_renum, i_pos_ind, i_rel_dt, i_abs_dt = ssg_time_handler(self.i_time[iid], timestamp, self.percentile, self.max_rel)
+        return {
+            "_dataset": self,
+            "user_id": uid,
+            "item_id": iid,
+            "rating": y,
+            "timestamp": timestamp,
+            "input_u": self.u_text[uid],
+            "input_i": self.i_text[iid],
+            "reuid": np.asarray(reuid, dtype=np.int64),
+            "reiid": np.asarray(reiid, dtype=np.int64),
+            "u_s_renum": u_s_renum,
+            "i_s_renum": i_s_renum,
+            "u_pos_ind": u_pos_ind,
+            "i_pos_ind": i_pos_ind,
+            "u_rel_dt": u_rel_dt,
+            "i_rel_dt": i_rel_dt,
+            "u_abs_dt": u_abs_dt,
+            "i_abs_dt": i_abs_dt,
+        }
+
+    def collate_fn(self, data_in: list[dict[str, object]]) -> dict[str, torch.Tensor]:
+        uids_tuple = tuple(int(sample["user_id"]) for sample in data_in)
+        iids_tuple = tuple(int(sample["item_id"]) for sample in data_in)
+        sub_neigh_list, target_ids = getSubGraph(uids_tuple, iids_tuple, self.neigh_list, self.user_num, self.n_hops, self.sample_num)
+        target_ids_list = list(target_ids)
+        nodes = torch.tensor(target_ids_list, dtype=torch.long)
+        adj = torch.zeros((len(target_ids_list), len(target_ids_list)), dtype=torch.float32)
+        nodes_map = {node: idx for idx, node in enumerate(target_ids_list)}
+
+        tmp_reviews: list[list[int]] = []
+        tmp_rating_ids: list[int] = []
+        for node in target_ids_list:
+            neighs = []
+            for neigh, edge in sub_neigh_list.get(node, []):
+                neighs.append((nodes_map[node], nodes_map[neigh], edge))
+            neighs = sorted(neighs, key=lambda value: value[1])
+            for row_idx, col_idx, edge in neighs:
+                adj[row_idx, col_idx] = 1.0
+                tmp_reviews.append(self.edge_reviews[edge])
+                tmp_rating_ids.append(int(self.edge_ratings[edge]) - 1)
+
+        if tmp_reviews:
+            reviews = torch.tensor(tmp_reviews, dtype=torch.long)
+            rating_onehot = np.zeros((len(tmp_rating_ids), self.max_rating), dtype=np.float32)
+            rating_onehot[np.arange(len(tmp_rating_ids)), tmp_rating_ids] = 1.0
+            ratings = torch.tensor(rating_onehot, dtype=torch.float32)
+        else:
+            reviews = torch.zeros((0, self.review_len_g), dtype=torch.long)
+            ratings = torch.zeros((0, self.max_rating), dtype=torch.float32)
+
+        pairs = torch.tensor([(nodes_map[uid], nodes_map[iid + self.user_num]) for uid, iid in zip(uids_tuple, iids_tuple)], dtype=torch.long)
+        uids = torch.tensor(uids_tuple, dtype=torch.long)
+        iids = torch.tensor([iid + self.user_num for iid in iids_tuple], dtype=torch.long)
+
+        def stack_long(key: str) -> torch.Tensor:
+            return torch.tensor(np.asarray([sample[key] for sample in data_in]), dtype=torch.long)
+
+        def stack_float(key: str) -> torch.Tensor:
+            return torch.tensor(np.asarray([sample[key] for sample in data_in]), dtype=torch.float32)
+
+        batch = {
+            "nodes": nodes,
+            "reviews": reviews,
+            "ratings": ratings,
+            "adj": adj,
+            "pairs": pairs,
+            "user_id": uids,
+            "item_id": iids,
+            "raw_item_id": torch.tensor(iids_tuple, dtype=torch.long),
+            "input_u": stack_long("input_u"),
+            "input_i": stack_long("input_i"),
+            "reuid": stack_long("reuid"),
+            "reiid": stack_long("reiid"),
+            "u_s_renum": torch.tensor([int(sample["u_s_renum"]) for sample in data_in], dtype=torch.long),
+            "i_s_renum": torch.tensor([int(sample["i_s_renum"]) for sample in data_in], dtype=torch.long),
+            "u_pos_ind": stack_long("u_pos_ind"),
+            "i_pos_ind": stack_long("i_pos_ind"),
+            "u_rel_dt": stack_long("u_rel_dt"),
+            "i_rel_dt": stack_long("i_rel_dt"),
+            "u_abs_dt": stack_float("u_abs_dt"),
+            "i_abs_dt": stack_float("i_abs_dt"),
+            "rating": torch.tensor([float(sample["rating"]) for sample in data_in], dtype=torch.float32),
+        }
+
+        # Backward-compatible aliases used by older project code and debug checks.
+        batch["item_review"] = batch["input_i"]
+        batch["user_review"] = batch["input_u"]
+        batch["user_review_item_ids"] = batch["reuid"]
+        batch["item_review_user_ids"] = batch["reiid"]
+        batch["user_seq_reviews"] = batch["input_u"]
+        batch["item_seq_reviews"] = batch["input_i"]
+        batch["user_seq_len"] = batch["u_s_renum"]
+        batch["item_seq_len"] = batch["i_s_renum"]
+        batch["user_pos_ind"] = batch["u_pos_ind"]
+        batch["item_pos_ind"] = batch["i_pos_ind"]
+        batch["user_rel_dt"] = batch["u_rel_dt"]
+        batch["item_rel_dt"] = batch["i_rel_dt"]
+        batch["user_abs_dt"] = batch["u_abs_dt"]
+        batch["item_abs_dt"] = batch["i_abs_dt"]
+        batch["graph_adj"] = batch["adj"]
+        batch["graph_reviews"] = batch["reviews"]
+        batch["graph_ratings"] = batch["ratings"]
+
+        debug_shapes = self._coerce_bool(self.configs.get("debug_shapes", False), False)
+        if debug_shapes and not getattr(self, "_shape_logged", False):
+            print("SSG dataloader shapes:", {key: tuple(value.shape) for key, value in batch.items() if key in {"nodes", "reviews", "ratings", "adj", "pairs", "input_u", "input_i", "reuid", "reiid", "u_pos_ind", "u_rel_dt", "u_abs_dt"}})
+            self._shape_logged = True
+        return batch
 
 
-def ssg_collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+def ssg_collate_fn(batch: list[dict[str, object]]) -> dict[str, torch.Tensor]:
     if not batch:
         return {}
-
-    collated: dict[str, torch.Tensor] = {}
-    for key in batch[0]:
-        if key in {"graph_adj", "graph_reviews", "graph_ratings"}:
-            collated[key] = batch[0][key]
-        else:
-            collated[key] = torch.stack([sample[key] for sample in batch], dim=0)
-    return collated
+    dataset = getattr(batch[0], "_dataset", None)
+    if dataset is None and isinstance(batch[0], dict):
+        dataset = batch[0].get("_dataset")
+    if dataset is not None:
+        return dataset.collate_fn(batch)
+    raise RuntimeError("SSG collate requires dataset-bound records; use SSGDataset.collate_fn via monkey-patched __getitem__.")

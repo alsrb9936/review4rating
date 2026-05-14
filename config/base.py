@@ -62,6 +62,7 @@ class Config(dict[str, Any]):
             "ed_weight",
             "classification",
             "init_pred_bias_with_rating_mean",
+            "match_original_sgdn_dims",
             "num_layers",
             "d_id",
             "d_text",

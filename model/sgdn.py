@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Mapping, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 import importlib
 
 import torch
@@ -28,18 +28,32 @@ class GCMCGraphConv(nn.Module):
         self.review_w = nn.Linear(review_dim, out_feats, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, graph, feat):
+    def forward(
+        self,
+        graph,
+        feat,
+        weight: torch.Tensor,
+        review_feat: Optional[torch.Tensor] = None,
+        rating_key: Optional[str] = None,
+        src_type: Optional[str] = None,
+    ):
         etype = graph.canonical_etypes[0][1]
-        rating = etype[-1]
-        src_feat = feat[0][f"h_{rating}"] if isinstance(feat, tuple) else feat[f"h_{rating}"]
-        src_idx = graph.edata["src_id"].to(src_feat.device)
-        dst_idx = graph.edata["dst_id"].to(src_feat.device)
-        src_h = self.node_w(src_feat[src_idx])
-        review_h = self.review_w(graph.edata["review_feat"].to(src_feat.device))
-        weight = self.dropout(graph.edata["w"].to(src_feat.device))
-        msg = (src_h + review_h) * weight
+        rating = rating_key if rating_key is not None else etype[-1]
+        if src_type is not None:
+            src_feat = feat[src_type][f"h_{rating}"]
+        else:
+            src_feat = feat[0][f"h_{rating}"] if isinstance(feat, tuple) else feat[f"h_{rating}"]
+        device = src_feat.device
+        src, dst = graph.edges(etype=etype)
+        src = src.to(device).long()
+        dst = dst.to(device).long()
+        src_h = self.node_w(src_feat[src])
+        if review_feat is not None:
+            msg = (src_h + self.review_w(review_feat.to(device))) * self.dropout(weight.to(device))
+        else:
+            msg = src_h * self.dropout(weight.to(device))
         out = msg.new_zeros((graph.num_dst_nodes(), msg.size(1)))
-        out.index_add_(0, dst_idx, msg)
+        out.index_add_(0, dst, msg)
         return out
 
 
@@ -57,6 +71,7 @@ class GCMCLayer(nn.Module):
         dropout: float,
         aggregate: str,
         edge_temperature: float,
+        num_edges_for_eta: int,
     ):
         super().__init__()
         if dglnn is None:
@@ -66,27 +81,34 @@ class GCMCLayer(nn.Module):
         self.num_factors = num_factors
         self.k = factor_idx
         self.edge_temperature = edge_temperature
+        self.num_edges_for_eta = max(1, int(num_edges_for_eta))
+        self.eta = nn.Parameter(torch.zeros(max(rating_vals), self.num_edges_for_eta))
+        self.ufc = nn.Linear(out_feats, out_feats)
+        self.ifc = nn.Linear(out_feats, out_feats)
+        self.agg_act = nn.LeakyReLU(0.1)
+        self.output_dropout = nn.Dropout(dropout)
         sub_conv = {}
         for rating in rating_vals:
             key = str(rating)
             sub_conv[key] = GCMCGraphConv(in_feats, out_feats, review_dim, dropout)
             sub_conv[f"rev-{key}"] = GCMCGraphConv(in_feats, out_feats, review_dim, dropout)
-        self.conv = self._dglnn.HeteroGraphConv(sub_conv, aggregate=aggregate)
+        self.sub_conv = nn.ModuleDict(sub_conv)
+        self.aggregate = aggregate
 
-    def _etype_weight(
+    def _etype_signal(
         self,
         graph,
         etype: Tuple[str, str, str],
         feat_dic: Mapping[str, Mapping[str, torch.Tensor]],
         review_feat_dic: Mapping[str, torch.Tensor],
         prototypes: torch.Tensor,
-        eta: torch.Tensor,
     ) -> torch.Tensor:
         src_type, rel, dst_type = etype
         rating = rel[-1]
         device = prototypes.device
-        src = graph.edges[etype].data["src_id"].to(device)
-        dst = graph.edges[etype].data["dst_id"].to(device)
+        src, dst = graph.edges(etype=etype)
+        src = src.to(device).long()
+        dst = dst.to(device).long()
 
         row_feat = F.normalize(feat_dic[src_type][f"h_{rating}"][src], dim=1)
         col_feat = F.normalize(feat_dic[dst_type][f"h_{rating}"][dst], dim=1)
@@ -98,22 +120,24 @@ class GCMCLayer(nn.Module):
         sim_all = (row_all * col_all).sum(dim=2) / tau
         exp_sim = torch.exp(sim_k) / torch.exp(sim_all).sum(dim=1).clamp_min(1e-8)
 
-        rating_reviews = review_feat_dic[rel].to(device)
-        review_feat_k = rating_reviews[:, self.k, :]
-        anchor_dot_k = (review_feat_k * prototypes[self.k]).sum(dim=1) / tau
-        anchor_dot_all = (rating_reviews * prototypes.unsqueeze(0)).sum(dim=2) / tau
-        exp_anchor_dot_k = torch.exp(anchor_dot_k) / torch.exp(anchor_dot_all).sum(dim=1).clamp_min(1e-8)
+        if rating in review_feat_dic:
+            rating_reviews = review_feat_dic[rating].to(device)
+            review_feat_k = rating_reviews[:, self.k, :]
+            anchor_dot_k = (review_feat_k * prototypes[self.k]).sum(dim=1) / tau
+            anchor_dot_all = (rating_reviews * prototypes.unsqueeze(0)).sum(dim=2) / tau
+            exp_anchor_dot_k = torch.exp(anchor_dot_k) / torch.exp(anchor_dot_all).sum(dim=1).clamp_min(1e-8)
+            if exp_anchor_dot_k.numel() > self.eta.size(1):
+                raise ValueError(
+                    f"SGDN eta has {self.eta.size(1)} columns but relation {rel!r} has "
+                    f"{exp_anchor_dot_k.numel()} edges. Increase num_edges_for_eta."
+                )
+            rating_row = max(0, int(rating) - 1)
+            gate = torch.sigmoid(self.eta[rating_row, : exp_anchor_dot_k.shape[0]]).to(device)
+            edge_factor_weight = gate * exp_anchor_dot_k + (1.0 - gate) * exp_sim
+        else:
+            edge_factor_weight = exp_sim
 
-        rating_idx = self.rating_vals.index(int(rating))
-        gate = torch.sigmoid(eta[rating_idx])
-        edge_factor_weight = gate * exp_anchor_dot_k + (1.0 - gate) * exp_sim
-
-        src_norm = torch.zeros(graph.num_nodes(src_type), device=device, dtype=edge_factor_weight.dtype)
-        dst_norm = torch.zeros(graph.num_nodes(dst_type), device=device, dtype=edge_factor_weight.dtype)
-        src_norm.index_add_(0, src, edge_factor_weight)
-        dst_norm.index_add_(0, dst, edge_factor_weight)
-        n_ij = torch.sqrt(src_norm[src] * dst_norm[dst]).clamp_min(1e-8)
-        return (edge_factor_weight / n_ij).unsqueeze(1)
+        return edge_factor_weight
 
     def forward(
         self,
@@ -121,18 +145,103 @@ class GCMCLayer(nn.Module):
         feat_dic: Mapping[str, Mapping[str, torch.Tensor]],
         review_feat_dic: Mapping[str, torch.Tensor],
         prototypes: torch.Tensor,
-        eta: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
-        for etype in graph.canonical_etypes:
-            graph.edges[etype].data["w"] = self._etype_weight(graph, etype, feat_dic, review_feat_dic, prototypes, eta)
-        out = self.conv(graph, feat_dic)
-        return {ntype: self._collapse_aggregate(value) for ntype, value in out.items()}
+    ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+        with graph.local_scope():
+            device = prototypes.device
+            norm_user_sum = torch.zeros(graph.num_nodes("user"), device=device)
+            norm_movie_sum = torch.zeros(graph.num_nodes("movie"), device=device)
+            edge_signals: Dict[Tuple[str, str, str], torch.Tensor] = {}
 
-    @staticmethod
-    def _collapse_aggregate(value: torch.Tensor) -> torch.Tensor:
-        if value.dim() == 3:
-            return value.sum(dim=1)
-        return value
+            for etype in graph.canonical_etypes:
+                src_type, _, dst_type = etype
+                edge_signal = self._etype_signal(graph, etype, feat_dic, review_feat_dic, prototypes)
+                edge_signals[etype] = edge_signal
+                src, dst = graph.edges(etype=etype)
+                src = src.to(device).long()
+                dst = dst.to(device).long()
+                if src_type == "movie":
+                    norm_movie_sum.index_add_(0, src, edge_signal)
+                    norm_user_sum.index_add_(0, dst, edge_signal)
+                else:
+                    norm_user_sum.index_add_(0, src, edge_signal)
+                    norm_movie_sum.index_add_(0, dst, edge_signal)
+
+            norm_user_sum = norm_user_sum / 2.0
+            norm_movie_sum = norm_movie_sum / 2.0
+            weights: Dict[Tuple[str, str, str], torch.Tensor] = {}
+            review_by_etype: Dict[Tuple[str, str, str], torch.Tensor] = {}
+            reverse_weights = []
+            for rating in sorted(self.rating_vals, reverse=True):
+                reverse_etype = ("movie", f"rev-{rating}", "user")
+                if reverse_etype not in edge_signals:
+                    continue
+                src, dst = graph.edges(etype=reverse_etype)
+                src = src.to(device).long()
+                dst = dst.to(device).long()
+                edge_signal = edge_signals[reverse_etype]
+                n_ij = torch.sqrt(norm_movie_sum[src] * norm_user_sum[dst]).clamp_min(1e-8)
+                weight = (edge_signal / n_ij).unsqueeze(1)
+                weights[reverse_etype] = weight
+                key = str(rating)
+                if key in review_feat_dic:
+                    review_by_etype[reverse_etype] = review_feat_dic[key].to(device)[:, self.k, :]
+                reverse_weights.append(weight)
+
+            for rating in self.rating_vals:
+                forward_etype = ("user", str(rating), "movie")
+                if forward_etype not in edge_signals:
+                    continue
+                src, dst = graph.edges(etype=forward_etype)
+                src = src.to(device).long()
+                dst = dst.to(device).long()
+                edge_signal = edge_signals[forward_etype]
+                n_ij = torch.sqrt(norm_user_sum[src] * norm_movie_sum[dst]).clamp_min(1e-8)
+                weights[forward_etype] = (edge_signal / n_ij).unsqueeze(1)
+                key = str(rating)
+                if key in review_feat_dic:
+                    review_by_etype[forward_etype] = review_feat_dic[key].to(device)[:, self.k, :]
+
+            out = self._manual_conv(graph, feat_dic, weights, review_by_etype)
+            out = {ntype: self._post_process(ntype, value) for ntype, value in out.items()}
+            if reverse_weights:
+                int_dist = torch.cat(reverse_weights, dim=0)
+            else:
+                int_dist = prototypes.new_zeros((0, 1))
+            return out, int_dist
+
+    def _manual_conv(
+        self,
+        graph,
+        feat_dic: Mapping[str, Mapping[str, torch.Tensor]],
+        weights: Mapping[Tuple[str, str, str], torch.Tensor],
+        review_by_etype: Mapping[Tuple[str, str, str], torch.Tensor],
+    ) -> Dict[str, torch.Tensor]:
+        per_node_type: Dict[str, List[torch.Tensor]] = {"user": [], "movie": []}
+        for rating in self.rating_vals:
+            for etype in (("user", str(rating), "movie"), ("movie", f"rev-{rating}", "user")):
+                if etype not in weights:
+                    continue
+                src_type, rel, dst_type = etype
+                subgraph = graph[etype]
+                conv = self.sub_conv[rel]
+                out = conv(subgraph, feat_dic, weights[etype], review_by_etype.get(etype), str(rating), src_type)
+                per_node_type[dst_type].append(out)
+
+        result = {}
+        for ntype, outputs in per_node_type.items():
+            if not outputs:
+                sample = next(iter(next(iter(feat_dic.values())).values()))
+                result[ntype] = sample.new_zeros((graph.num_nodes(ntype), sample.size(1)))
+            elif self.aggregate == "stack":
+                result[ntype] = torch.stack(outputs, dim=1)
+            else:
+                result[ntype] = torch.stack(outputs, dim=0).sum(dim=0)
+        return result
+
+    def _post_process(self, ntype: str, value: torch.Tensor) -> torch.Tensor:
+        value = self.agg_act(value)
+        value = self.output_dropout(value)
+        return self.ufc(value) if ntype == "user" else self.ifc(value)
 
 
 class MLPPredictor(nn.Module):
@@ -145,19 +254,18 @@ class MLPPredictor(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(in_units * 2, 64, bias=False),
             nn.GELU(),
-            nn.Dropout(dropout),
             nn.Linear(64, 64, bias=False),
-            nn.GELU(),
         )
-        self.predictor = nn.Linear(64, num_classes if classification else 1, bias=True)
+        self.dropout = nn.Dropout(dropout)
+        self.predictor = nn.Linear(64, num_classes if classification else 1, bias=False)
 
     def forward(self, graph, user_out: torch.Tensor, item_out: torch.Tensor):
-        with graph.local_scope():
-            graph.nodes["user"].data["h"] = user_out
-            graph.nodes["movie"].data["h"] = item_out
-            graph.apply_edges(self._apply_edges, etype="rate")
-            h_fea = self.mlp(graph.edges["rate"].data["cat"])
-            return self.predictor(h_fea), h_fea
+        src, dst = graph.edges(etype="rate")
+        device = user_out.device
+        src = src.to(device).long()
+        dst = dst.to(device).long()
+        h_fea = self.dropout(self.mlp(torch.cat([user_out[src], item_out[dst]], dim=1)))
+        return self.predictor(h_fea), h_fea
 
     @staticmethod
     def _apply_edges(edges):
@@ -222,11 +330,22 @@ class SGDN(AbstractRec):
         self.train_dataset = train_dataset
         self.num_users = int(train_dataset.num_users)
         self.num_items = int(train_dataset.num_items)
-        self.review_dim = int(configs.get("review_dim", configs.get("review_feat_size", configs.get("bert_whitening_dim", 64))))
+        self.review_dim = int(getattr(train_dataset, "review_dim", configs.get("review_dim", configs.get("review_feat_size", configs.get("bert_whitening_dim", 64)))))
+        for dim_key in ("review_dim", "review_feat_size", "bert_whitening_dim"):
+            if dim_key in configs and int(configs.get(dim_key)) != self.review_dim:
+                print(f"[SGDN] Sync {dim_key}={configs.get(dim_key)} -> actual review_dim={self.review_dim}")
+            configs[dim_key] = self.review_dim
         self.num_factors = int(configs.get("num_factors", configs.get("num_factor", 2)))
         self.num_layers = int(configs.get("num_layers", configs.get("num_layer", 1)))
-        self.hidden_dim = int(configs.get("hidden_dim", configs.get("gcn_out_units", self.review_dim)))
-        self.gcn_out_units = int(configs.get("gcn_out_units", self.hidden_dim))
+        if bool(configs.get("match_original_sgdn_dims", True)):
+            self.hidden_dim = self.review_dim
+            self.gcn_out_units = self.review_dim
+            configs["hidden_dim"] = self.hidden_dim
+            configs["gcn_out_units"] = self.gcn_out_units
+            configs["gcn_agg_units"] = self.review_dim
+        else:
+            self.hidden_dim = int(configs.get("hidden_dim", configs.get("gcn_out_units", self.review_dim)))
+            self.gcn_out_units = int(configs.get("gcn_out_units", self.hidden_dim))
         if self.hidden_dim % self.num_factors != 0:
             raise ValueError("SGDN hidden_dim must be divisible by num_factors.")
         self.factor_dim = self.hidden_dim // self.num_factors
@@ -240,9 +359,10 @@ class SGDN(AbstractRec):
         self.num_neg = int(configs.get("num_neg", 2048))
         self.use_contrastive = bool(configs.get("use_contrastive", True))
         self.classification = bool(configs.get("classification", configs.get("train_classification", False)))
-        self.init_pred_bias_with_rating_mean = bool(configs.get("init_pred_bias_with_rating_mean", True))
+        self.init_pred_bias_with_rating_mean = bool(configs.get("init_pred_bias_with_rating_mean", False))
         self.debug_shapes = bool(configs.get("debug_shapes", False))
         self.rating_vals = [int(v) for v in configs.get("rating_values", [1, 2, 3, 4, 5])]
+        self.num_edges_for_eta = int(getattr(train_dataset, "num_train_edges", getattr(train_dataset, "ratings", torch.empty(0)).numel()))
         self._shape_logged = False
 
         self.ufeats = nn.ModuleDict({
@@ -254,7 +374,6 @@ class SGDN(AbstractRec):
             for rating in self.rating_vals
         })
         self.rfcs = nn.ModuleList([nn.Linear(self.review_dim, self.review_dim) for _ in range(self.num_factors)])
-        self.eta = nn.Parameter(torch.zeros(len(self.rating_vals)))
         self.prototypes = nn.Parameter(torch.empty(self.num_factors, self.review_dim))
 
         layers = []
@@ -272,6 +391,7 @@ class SGDN(AbstractRec):
                         dropout=self.gcn_dropout,
                         aggregate="sum" if layer_idx == self.num_layers - 1 else "stack",
                         edge_temperature=self.edge_temperature,
+                        num_edges_for_eta=self.num_edges_for_eta,
                     )
                 )
             layers.append(factor_layers)
@@ -280,6 +400,9 @@ class SGDN(AbstractRec):
         self.rating_loss_fn = nn.CrossEntropyLoss() if self.classification else nn.MSELoss()
 
         self._init_parameters()
+        # Original SGDN calls reset_parameters() after KMeans prototype init, which overwrites centroids.
+        # This port intentionally initializes learnable weights first and then applies KMeans so the
+        # prototype prior survives model construction.
         self._init_prototypes(train_dataset)
         if self.init_pred_bias_with_rating_mean:
             self._init_pred_bias_with_train_mean(train_dataset)
@@ -334,10 +457,10 @@ class SGDN(AbstractRec):
         print(f"SGDN initialized review prototypes with {source}: {tuple(self.prototypes.shape)}")
 
     def _init_pred_bias_with_train_mean(self, train_dataset) -> None:
-        if self.classification:
+        if self.classification or self.decoder.predictor.bias is None:
             return
         ratings = getattr(train_dataset, "ratings", None)
-        if not isinstance(ratings, torch.Tensor) or ratings.numel() == 0 or self.decoder.predictor.bias is None:
+        if not isinstance(ratings, torch.Tensor) or ratings.numel() == 0:
             return
         rating_mean = float(ratings.float().mean().item())
         with torch.no_grad():
@@ -347,7 +470,10 @@ class SGDN(AbstractRec):
         if isinstance(value, torch.Tensor):
             return value.to(device)
         if dgl is not None and isinstance(value, self._dgl.DGLHeteroGraph):
-            return value.to(device)
+            # Keep SGDN graph structure on CPU and move only edge index tensors/features as needed.
+            # DGL 2.x can hit illegal-memory-access failures for this full heterograph on specific
+            # CUDA devices (observed on cuda:3), while CPU graph metadata + GPU tensors is stable.
+            return value
         if isinstance(value, list):
             return [self._to_device(sub_value, device) for sub_value in value]
         if isinstance(value, dict):
@@ -361,12 +487,15 @@ class SGDN(AbstractRec):
             raise TypeError("SGDN expects batch data as a dictionary.")
         return prepared
 
-    def _factorize_review_features(self, enc_graph) -> Dict[str, torch.Tensor]:
+    def _factorize_review_features(self, review_feat_dic: Mapping[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         review_dic_fact = {}
-        for _, rel, _ in enc_graph.canonical_etypes:
-            review_feat = enc_graph.edges[rel].data["review_feat"]
+        for rating in self.rating_vals:
+            key = str(rating)
+            if key not in review_feat_dic:
+                continue
+            review_feat = review_feat_dic[key]
             projected = [rfc(review_feat).unsqueeze(1) for rfc in self.rfcs]
-            review_dic_fact[rel] = torch.cat(projected, dim=1)
+            review_dic_fact[key] = torch.cat(projected, dim=1)
         return review_dic_fact
 
     def _prepare_factor_features(self, factor_states: List[Dict[str, Dict[str, torch.Tensor]]], factor_idx: int) -> Dict[str, Dict[str, torch.Tensor]]:
@@ -399,25 +528,12 @@ class SGDN(AbstractRec):
             })
         return states
 
-    def _int_dist(self, dec_graph, review_feat_dic_fact: Mapping[str, torch.Tensor], user_out: torch.Tensor, item_out: torch.Tensor) -> torch.Tensor:
-        review_feat = dec_graph.edges["rate"].data["review_feat"]
-        review_all = torch.cat([rfc(review_feat).unsqueeze(1) for rfc in self.rfcs], dim=1)
-        anchor_scores = (review_all * self.prototypes.unsqueeze(0)).sum(dim=2) / self.edge_temperature
-        review_dist = F.softmax(anchor_scores, dim=1)
-        src, dst = dec_graph.edges(etype="rate")
-        user_factor = user_out[src].view(-1, self.num_factors, self.factor_dim)
-        item_factor = item_out[dst].view(-1, self.num_factors, self.factor_dim)
-        node_scores = F.cosine_similarity(user_factor, item_factor, dim=2) / self.edge_temperature
-        node_dist = F.softmax(node_scores, dim=1)
-        gate = torch.sigmoid(self.eta).mean()
-        int_dist = gate * review_dist + (1.0 - gate) * node_dist
-        return int_dist / int_dist.sum(dim=1, keepdim=True).clamp_min(1e-8)
-
     def encode(self, enc_graphs, dec_graph, review_feat_dic):
         assert len(enc_graphs) == self.num_factors, f"len(enc_graphs)={len(enc_graphs)} != num_factors={self.num_factors}"
         assert isinstance(dec_graph, self._dgl.DGLHeteroGraph)
-        review_dic_fact = self._factorize_review_features(enc_graphs[0])
+        review_dic_fact = self._factorize_review_features(review_feat_dic)
         factor_states = self._initial_factor_states()
+        int_dist_parts = []
 
         for layer_idx in range(len(self.encoder_layers)):
             factor_layers = self.encoder_layers[layer_idx]
@@ -428,10 +544,14 @@ class SGDN(AbstractRec):
                 if not isinstance(layer, GCMCLayer):
                     raise TypeError("SGDN encoder layer is malformed.")
                 feat_dic = self._prepare_factor_features(factor_states, factor_idx)
-                out = layer(enc_graphs[factor_idx], feat_dic, review_dic_fact, F.normalize(self.prototypes, dim=1), self.eta)
+                out, int_dist = layer(enc_graphs[factor_idx], feat_dic, review_dic_fact, F.normalize(self.prototypes, dim=1))
+                if layer_idx == len(self.encoder_layers) - 1:
+                    int_dist_parts.append(int_dist)
+                user_by_rating = self._split_layer_output(out["user"])
+                item_by_rating = self._split_layer_output(out["movie"])
                 next_states.append({
-                    "user": {str(rating): out["user"] for rating in self.rating_vals},
-                    "movie": {str(rating): out["movie"] for rating in self.rating_vals},
+                    "user": {str(rating): user_by_rating[str(rating)] for rating in self.rating_vals},
+                    "movie": {str(rating): item_by_rating[str(rating)] for rating in self.rating_vals},
                 })
             factor_states = next_states
 
@@ -442,8 +562,13 @@ class SGDN(AbstractRec):
             item_parts.append(torch.stack(list(factor_states[factor_idx]["movie"].values()), dim=0).mean(dim=0))
         user_out = torch.cat(user_parts, dim=1)
         item_out = torch.cat(item_parts, dim=1)
-        int_dist = self._int_dist(dec_graph, review_dic_fact, user_out, item_out)
+        int_dist = torch.cat(int_dist_parts, dim=1) if int_dist_parts else user_out.new_zeros((0, self.num_factors))
         return user_out, item_out, int_dist, review_dic_fact
+
+    def _split_layer_output(self, value: torch.Tensor) -> Dict[str, torch.Tensor]:
+        if value.dim() == 3:
+            return {str(rating): value[:, idx, :] for idx, rating in enumerate(self.rating_vals)}
+        return {str(rating): value for rating in self.rating_vals}
 
     def _forward_once(self, batch: Dict[str, Any]):
         user_out, item_out, int_dist, review_dic_fact = self.encode(batch["enc_graphs"], batch["dec_graph"], batch["review_feat_dic"])
@@ -452,7 +577,8 @@ class SGDN(AbstractRec):
         return pred_ratings, h_fea, int_dist
 
     def _assert_and_log_shapes(self, batch, pred_ratings, int_dist, review_dic_fact) -> None:
-        assert int_dist.shape == (batch["ratings"].numel(), self.num_factors), tuple(int_dist.shape)
+        expected_encoder_edges = int(sum(int(x) for x in batch["rating_split"]))
+        assert int_dist.shape == (expected_encoder_edges, self.num_factors), tuple(int_dist.shape)
         assert pred_ratings.shape[0] == batch["ratings"].shape[0], (tuple(pred_ratings.shape), tuple(batch["ratings"].shape))
         for rating in self.rating_vals:
             key = str(rating)
@@ -460,13 +586,14 @@ class SGDN(AbstractRec):
             assert review_dic_fact[key].shape == (expected_edges, self.num_factors, self.review_dim), tuple(review_dic_fact[key].shape)
         if not torch.isfinite(pred_ratings).all():
             raise FloatingPointError("SGDN prediction contains NaN/Inf.")
-        if self.debug_shapes and not self._shape_logged:
-            print("SGDN DGL shape check:", {
-                "enc_graphs": len(batch["enc_graphs"]),
-                "dec_edges": int(batch["dec_graph"].num_edges("rate")),
-                "int_dist": tuple(int_dist.shape),
-                "pred": tuple(pred_ratings.shape),
-                "review_factor_shapes": {k: tuple(v.shape) for k, v in review_dic_fact.items()},
+        if not self._shape_logged:
+            print("SGDN first-batch shape check:", {
+                "review_dim": self.review_dim,
+                "num_factors": self.num_factors,
+                "prototypes.shape": tuple(self.prototypes.shape),
+                "int_dist.shape": tuple(int_dist.shape),
+                "pred_ratings.shape": tuple(pred_ratings.shape),
+                "rating_split": [int(x) for x in batch["rating_split"]],
             })
             self._shape_logged = True
 
@@ -517,3 +644,12 @@ class SGDN(AbstractRec):
 
     def predict_scores(self, *args, **kwargs):
         raise NotImplementedError("SGDN is a full-graph rating predictor; use predict_ratings(batch_data) for decoder edges.")
+
+
+# DIFFERENCES_FROM_ORIGINAL_SGDN:
+# - The original code loads review vectors from a `(user, item) -> tensor` pickle; this framework uses
+#   `review_embedding` columns generated/cached by the review4rating BERT pipeline.
+# - Decoder edges are kept grouped by descending rating so `rating_split=[5,4,3,2,1]` aligns with
+#   contrastive segments; the upstream loader relies on its own data order.
+# - KMeans prototypes are intentionally applied after parameter initialization so they are not overwritten
+#   by `reset_parameters()`, fixing an upstream construction-order issue.

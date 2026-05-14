@@ -117,14 +117,15 @@ class PrototypeIntentExtractor(nn.Module):
 class SharedResidualDisentangler(nn.Module):
     def __init__(self, d_model=128, dropout=0.1):
         super().__init__()
+        pair_dim = d_model * 4
         self.shared_mlp = nn.Sequential(
-            nn.Linear(d_model, d_model),
+            nn.Linear(pair_dim, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(d_model, d_model),
         )
         self.residual_mlp = nn.Sequential(
-            nn.Linear(d_model, d_model),
+            nn.Linear(pair_dim, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(d_model, d_model),
@@ -148,9 +149,9 @@ class SharedResidualDisentangler(nn.Module):
                     nn.init.zeros_(module.bias)
 
     def forward(self, zX, zY):
-        del zY
-        zS = self.shared_norm(self.shared_mlp(zX))
-        zR = self.residual_norm(self.residual_mlp(zX))
+        pair_representation = torch.cat([zX, zY, zX * zY, torch.abs(zX - zY)], dim=-1)
+        zS = self.shared_norm(self.shared_mlp(pair_representation))
+        zR = self.residual_norm(self.residual_mlp(pair_representation))
         recon_zX = self.recon_norm(self.recon_mlp(torch.cat([zS, zR], dim=-1)))
         return zS, zR, recon_zX
 

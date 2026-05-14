@@ -97,7 +97,12 @@ def apply_iard_loss_preset(configs):
     }
     if preset not in preset_overrides:
         raise ValueError(f"Unsupported IARD loss preset: {preset}")
-    configs.merge(preset_overrides[preset])
+    # Presets are intentionally non-destructive: model YAMLs and CLI overrides are
+    # treated as explicit experiment settings, so presets only fill absent/null keys.
+    # Use CLI flags (or a derived YAML) for ablations that need to change a value
+    # already defined in config/yaml/iard_rm.yaml.
+    resolved = {key: value for key, value in preset_overrides[preset].items() if configs.get(key) is None}
+    configs.merge(resolved)
 
 
 def args_parser():
@@ -105,7 +110,7 @@ def args_parser():
     parser.add_argument("--model", type=str, default=None, help="Model name")
     parser.add_argument("--dataset", type=str, default=None, help="Dataset name")
     parser.add_argument("--data_path", type=str, default="/home/infolab/mnt/mingyu/review_rec/dataset", help="Data path")
-    parser.add_argument("--gpu", type=int, default=3, help="GPU ID")
+    parser.add_argument("--gpu", type=int, default=0, help="GPU ID")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--mode", type=str, default="train", help="train or eval")
     parser.add_argument("--result_path", type=str, default=None, help="Path to results folder (for eval mode)")
@@ -114,6 +119,16 @@ def args_parser():
     parser.add_argument("--eval_batch", type=int, default=None)
     parser.add_argument("--eval_step", type=int, default=None, help="Evaluation every N epochs")
     parser.add_argument("--drop_cold_start_eval", type=str_to_bool, default=None, help="Drop valid/test rows with users/items unseen in train")
+    parser.add_argument("--loss_preset", type=str, default=None)
+    parser.add_argument("--eta", type=float, default=None)
+    parser.add_argument("--shared_fusion_scale", type=float, default=None)
+    parser.add_argument("--residual_fusion_scale", type=float, default=None)
+    parser.add_argument("--gate_alpha", type=float, default=None)
+    parser.add_argument("--lambda_align", type=float, default=None)
+    parser.add_argument("--lambda_sep", type=float, default=None)
+    parser.add_argument("--lambda_recon", type=float, default=None)
+    parser.add_argument("--lambda_gate", type=float, default=None)
+    parser.add_argument("--lambda_proto", type=float, default=None)
     return parser.parse_args()
 
 
@@ -273,6 +288,22 @@ def eval_mode(args):
     configs['gpu'] = args.gpu
     if args.drop_cold_start_eval is not None:
         configs['drop_cold_start_eval'] = args.drop_cold_start_eval
+    iard_cli_overrides = {
+        'loss_preset': getattr(args, 'loss_preset', None),
+        'eta': getattr(args, 'eta', None),
+        'shared_fusion_scale': getattr(args, 'shared_fusion_scale', None),
+        'residual_fusion_scale': getattr(args, 'residual_fusion_scale', None),
+        'gate_alpha': getattr(args, 'gate_alpha', None),
+        'lambda_align': getattr(args, 'lambda_align', None),
+        'lambda_sep': getattr(args, 'lambda_sep', None),
+        'lambda_recon': getattr(args, 'lambda_recon', None),
+        'lambda_gate': getattr(args, 'lambda_gate', None),
+        'lambda_proto': getattr(args, 'lambda_proto', None),
+    }
+    provided_iard_keys = [key for key, value in iard_cli_overrides.items() if value is not None]
+    if provided_iard_keys:
+        configs.merge({key: value for key, value in iard_cli_overrides.items() if value is not None})
+        configs['_explicit_iard_keys'] = provided_iard_keys
     apply_iard_loss_preset(configs)
 
     model_name = configs.get('basemodel') or configs.get('model', {}).get('name')
@@ -335,8 +366,35 @@ def main():
         'gpu': args.gpu,
         'seed': args.seed,
         'drop_cold_start_eval': args.drop_cold_start_eval,
+        'loss_preset': args.loss_preset,
+        'eta': args.eta,
+        'shared_fusion_scale': args.shared_fusion_scale,
+        'residual_fusion_scale': args.residual_fusion_scale,
+        'gate_alpha': args.gate_alpha,
+        'lambda_align': args.lambda_align,
+        'lambda_sep': args.lambda_sep,
+        'lambda_recon': args.lambda_recon,
+        'lambda_gate': args.lambda_gate,
+        'lambda_proto': args.lambda_proto,
     }
+    provided_iard_keys = [
+        key for key in (
+            'loss_preset',
+            'eta',
+            'shared_fusion_scale',
+            'residual_fusion_scale',
+            'gate_alpha',
+            'lambda_align',
+            'lambda_sep',
+            'lambda_recon',
+            'lambda_gate',
+            'lambda_proto',
+        )
+        if cli_overrides.get(key) is not None
+    ]
     configs.merge({k: v for k, v in cli_overrides.items() if v is not None})
+    if provided_iard_keys:
+        configs['_explicit_iard_keys'] = provided_iard_keys
 
     configs['dataset'] = args.dataset
     if not configs.get('basemodel'):

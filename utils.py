@@ -91,7 +91,7 @@ def _fill_missing_embeddings(frame: pd.DataFrame, review_embeddings: list[object
 
 
 def _compute_bert_whitening_for_frame(frame: pd.DataFrame, configs, stats_path: str, fit: bool) -> list[object]:
-    gpu_id = configs.get('gpu', 3)
+    gpu_id = configs.get('gpu', 0)
     review_embeddings: list[object] = [None] * len(frame)
     non_empty_idx = [i for i, text in enumerate(frame["reviewText"].tolist()) if text]
     if non_empty_idx:
@@ -207,7 +207,7 @@ def set_seed(seed):
 def load_interaction_data(configs):
     print(f"load interaction data from {configs['data_path']}")
     path = configs["data_path"]
-    gpu_id = configs.get('gpu', 3)
+    gpu_id = configs.get('gpu', 0)
     model_name = configs['language_model']
     sentiment_model = configs['sentiment_model']
     dataset = configs['dataset']
@@ -529,6 +529,12 @@ def get_dataloader(train_df, valid_df, test_df, configs):
         train_dataset = DAMLDataset(train_df, configs, split="train")
         valid_dataset = DAMLDataset(valid_df, configs, split="valid", train_dataset=train_dataset)
         test_dataset = DAMLDataset(test_df, configs, split="test", train_dataset=train_dataset)
+    elif model_name == "sgdn":
+        from data.sgdn_dataset import SGDNDataset
+
+        train_dataset = SGDNDataset(train_df, configs, split="train")
+        valid_dataset = SGDNDataset(valid_df, configs, split="valid", train_dataset=train_dataset)
+        test_dataset = SGDNDataset(test_df, configs, split="test", train_dataset=train_dataset)
     else:
         train_dataset = dataset_cls(train_df, configs, split="train")
         valid_dataset = dataset_cls(valid_df, configs, split="valid")

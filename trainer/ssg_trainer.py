@@ -24,10 +24,15 @@ class SSGTrainer(BaseTrainer):
         user_id = batch["user_id"].to(self.device)
         item_id = batch["item_id"].to(self.device)
         ratings = batch["rating"].to(self.device)
-        user_review = batch["user_review"].to(self.device)
-        item_review = batch["item_review"].to(self.device)
-        user_review_item_ids = batch["user_review_item_ids"].to(self.device)
-        item_review_user_ids = batch["item_review_user_ids"].to(self.device)
+        input_u = batch["input_u"].to(self.device)
+        input_i = batch["input_i"].to(self.device)
+        reuid = batch["reuid"].to(self.device)
+        reiid = batch["reiid"].to(self.device)
+        nodes = batch["nodes"].to(self.device)
+        reviews = batch["reviews"].to(self.device)
+        graph_ratings = batch["ratings"].to(self.device)
+        adj = batch["adj"].to(self.device)
+        pairs = batch["pairs"].to(self.device)
 
         user_seq_reviews = batch.get("user_seq_reviews")
         item_seq_reviews = batch.get("item_seq_reviews")
@@ -80,10 +85,19 @@ class SSGTrainer(BaseTrainer):
             "user_id": user_id,
             "item_id": item_id,
             "rating": ratings,
-            "user_review": user_review,
-            "item_review": item_review,
-            "user_review_item_ids": user_review_item_ids,
-            "item_review_user_ids": item_review_user_ids,
+            "input_u": input_u,
+            "input_i": input_i,
+            "reuid": reuid,
+            "reiid": reiid,
+            "nodes": nodes,
+            "reviews": reviews,
+            "ratings": graph_ratings,
+            "adj": adj,
+            "pairs": pairs,
+            "user_review": input_u,
+            "item_review": input_i,
+            "user_review_item_ids": reuid,
+            "item_review_user_ids": reiid,
             "user_seq_reviews": user_seq_reviews,
             "item_seq_reviews": item_seq_reviews,
             "user_seq_len": user_seq_len,

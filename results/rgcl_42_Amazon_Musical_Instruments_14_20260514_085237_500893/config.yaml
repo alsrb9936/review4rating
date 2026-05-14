@@ -1,54 +1,71 @@
 training:
-  batch: 100
+  batch: 1
   training:
-    batch: 100
-    eval_batch: 256
-    epoch: 500
-    lr: 0.002
+    batch: 1
+    eval_batch: 1
+    epoch: 400
+    lr: 0.01
     weight_decay: 0.0
-    lr_decay: 1.0
-  eval_batch: 256
-  epoch: 500
-  lr: 0.002
+    grad_clip: 1.0
+  eval_batch: 1
+  epoch: 400
+  lr: 0.01
   weight_decay: 0.0
-  lr_decay: 1.0
+  early_stop_patience: 50
+  evaluation:
+    early_stop_patience: 50
+    eval_step: 1
+  grad_clip: 1.0
+  eval_step: 1
 evaluation:
   eval_step: 1
   evaluation:
     eval_step: 1
-    early_stop_patience: 40
+    early_stop_patience: 10
     best_metric_name: rmse
-    eval_clip: false
+    eval_clip: true
     drop_cold_start_eval: true
     min_rating: 1.0
     max_rating: 5.0
-  early_stop_patience: 40
+    metrics: &id001
+    - rmse
+    - mse
+    - mae
+  early_stop_patience: 10
   best_metric_name: rmse
-  eval_clip: false
+  eval_clip: true
   drop_cold_start_eval: true
   min_rating: 1.0
   max_rating: 5.0
+  metrics: *id001
 model:
   embedding_size: 64
   model:
     embedding_size: 64
-    dropout_prob: 0.5
-  dropout_prob: 0.5
-  narre_preprocess_mode: original
-  auto_review_shape: true
-  original_cold_start_dummy: true
-  word_dim: 300
-  kernel_count: 100
-  kernel_size: 3
-  filter_sizes: &id001
-  - 3
-  id_dim: 32
-  attention_size: 32
-  freeze_word_embedding: false
-  l2_reg_lambda: 0.001
-  mask_padding_attention: false
-  word_embedding_cpu: false
-  retain_rui: true
+    dropout_prob: 0.1
+    name: rgcl
+    num_layers: 1
+    dropout: 0.7
+    node_dropout: 0.8
+    review_dim: 384
+    use_review: true
+    symm: true
+    use_contrastive: true
+    nd_weight: 0.3
+    ed_weight: 1.0
+    classification: true
+  dropout_prob: 0.1
+  name: rgcl
+  num_layers: 1
+  dropout: 0.7
+  node_dropout: 0.8
+  review_dim: 384
+  use_review: true
+  symm: true
+  use_contrastive: true
+  nd_weight: 0.3
+  ed_weight: 1.0
+  classification: true
 data:
   data_path: /home/infolab/mnt/mingyu/review_rec/dataset
   data:
@@ -58,9 +75,9 @@ data:
     sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
     sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
     language_model: sentence-transformers/all-MiniLM-L12-v2
-    use_review_text: true
-    use_review_embedding: false
-    compute_review_embedding: false
+    use_review_text: false
+    use_review_embedding: true
+    compute_review_embedding: true
     use_sentiment: false
     review_feature_backend: sentence_transformer
     review_emb_path: null
@@ -76,9 +93,9 @@ data:
   sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
   sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
   language_model: sentence-transformers/all-MiniLM-L12-v2
-  use_review_text: true
-  use_review_embedding: false
-  compute_review_embedding: false
+  use_review_text: false
+  use_review_embedding: true
+  compute_review_embedding: true
   use_sentiment: false
   review_feature_backend: sentence_transformer
   review_emb_path: null
@@ -89,30 +106,13 @@ data:
   bert_whitening_normalize: true
   bert_whitening_cache_scope: full
   bert_whitening_stats_path: null
-  glove_path: /home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt
-  drop_cold_start_eval: false
-  evaluation:
-    drop_cold_start_eval: false
-basemodel: narre
-glove_path: /home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt
-narre_preprocess_mode: original
-auto_review_shape: true
-original_cold_start_dummy: true
-word_dim: 300
-kernel_count: 100
-kernel_size: 3
-filter_sizes: *id001
-id_dim: 32
-attention_size: 32
-freeze_word_embedding: false
-l2_reg_lambda: 0.001
-mask_padding_attention: false
-word_embedding_cpu: false
-retain_rui: true
+  use_cached_graphs: true
+use_cached_graphs: true
 gpu: 3
 seed: 42
 dataset: Amazon_Musical_Instruments_14
-result_path: results/narre_42_Amazon_Musical_Instruments_14_20260514_044003_745208
+basemodel: rgcl
+result_path: results/rgcl_42_Amazon_Musical_Instruments_14_20260514_085237_500893
 cold_start_eval_summary:
   valid:
     num_samples_before: 1026
@@ -130,9 +130,3 @@ cold_start_eval_summary:
     num_samples_after: 1027
 num_users: 1429
 num_items: 900
-user_review_count: 9
-item_review_count: 15
-user_review_length: 197
-item_review_length: 197
-review_count: 15
-review_length: 197

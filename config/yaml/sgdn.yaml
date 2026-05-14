@@ -16,9 +16,10 @@ model:
   review_dim: 64
   # review_feat_size: 384     # original SGDN alias for review_dim
   review_feat_size : 64
-  hidden_dim: 64            # project canonical final user/item embedding dim
+  hidden_dim: 64            # synced to actual review_dim at runtime when match_original_sgdn_dims=true
   gcn_agg_units: 64         # original SGDN message units before factor split
   gcn_out_units: 64         # original SGDN output units; kept equal to hidden_dim/review_dim
+  match_original_sgdn_dims: true
 
   # Graph convolution settings / original SGDN aliases
   num_layers: 1             # project canonical key
@@ -57,7 +58,7 @@ model:
   # Prediction mode / original SGDN aliases
   classification: false
   train_classification: false
-  init_pred_bias_with_rating_mean: true
+  init_pred_bias_with_rating_mean: false
 
 training:
   # This project uses full-graph SGDN batches, so batch/eval_batch must stay 1.
@@ -93,5 +94,5 @@ data:
   use_review_embedding: true
   compute_review_embedding: true
   use_sentiment: false
-  review_feature_backend: "sentence_transformer"
+  review_feature_backend: "bert_whitening"
   use_bert_whitening: True

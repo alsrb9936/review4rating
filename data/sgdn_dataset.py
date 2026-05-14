@@ -20,7 +20,7 @@ class SGDNDataset(RecDataset):
     ``enc_graphs``, ``dec_graph``, ``review_feat_dic`` and ``rating_split``.
     """
 
-    def __init__(self, df, configs, split="train"):
+    def __init__(self, df, configs, split="train", train_dataset=None):
         super().__init__(df, configs, split)
         if dgl is None:
             raise ImportError(
@@ -30,9 +30,10 @@ class SGDNDataset(RecDataset):
         self._dgl = dgl
 
         self.rating_vals = [int(v) for v in configs.get("rating_values", [1, 2, 3, 4, 5])]
-        self.review_dim = int(configs.get("review_dim", configs.get("review_feat_size", configs.get("bert_whitening_dim", 384))))
+        self.review_dim = self._resolve_review_dim(df, configs)
         self.num_factors = int(configs.get("num_factors", configs.get("num_factor", 2)))
         self.use_review_feat = bool(configs.get("use_review", True))
+        self.train_dataset = train_dataset
 
         self.enc_graphs = []
         self.dec_graph = None
@@ -45,7 +46,41 @@ class SGDNDataset(RecDataset):
         self.ratings = None
 
         self._build_decoder_graph(self.df)
-        self._build_encoder_graphs(self.df)
+        if self.split in {"valid", "test"} and train_dataset is not None:
+            # Original SGDN evaluates valid/test decoder edges with the training encoder graph.
+            self.enc_graphs = train_dataset.enc_graphs
+            self.review_feat_dic = train_dataset.review_feat_dic
+            self.rating_split = train_dataset.rating_split
+            self.num_train_edges = train_dataset.num_train_edges
+        else:
+            self._build_encoder_graphs(self.df)
+
+    def _resolve_review_dim(self, frame, configs) -> int:
+        actual_dim = None
+        if "review_embedding" in frame.columns:
+            for review_embedding in frame["review_embedding"].tolist():
+                if review_embedding is None or (isinstance(review_embedding, float) and np.isnan(review_embedding)):
+                    continue
+                if isinstance(review_embedding, torch.Tensor):
+                    actual_dim = int(review_embedding.detach().view(-1).numel())
+                else:
+                    actual_dim = int(torch.tensor(review_embedding, dtype=torch.float32).view(-1).numel())
+                break
+
+        configured_dim = int(configs.get("review_dim", configs.get("review_feat_size", configs.get("bert_whitening_dim", actual_dim or 64))))
+        if actual_dim is None:
+            actual_dim = configured_dim
+        if configured_dim != actual_dim:
+            print(f"[SGDN] Review embedding dim from tensors is {actual_dim}; syncing config review_dim={configured_dim} to actual.")
+        for dim_key in ("review_dim", "review_feat_size", "bert_whitening_dim"):
+            if dim_key in configs and int(configs.get(dim_key)) != actual_dim:
+                print(f"[SGDN] Sync {dim_key}={configs.get(dim_key)} -> {actual_dim}")
+            configs[dim_key] = actual_dim
+        if bool(configs.get("match_original_sgdn_dims", True)):
+            configs["hidden_dim"] = actual_dim
+            configs["gcn_out_units"] = actual_dim
+            configs["gcn_agg_units"] = actual_dim
+        return actual_dim
 
     def _extract_review_tensor(self, frame) -> torch.Tensor:
         if not self.use_review_feat or "review_embedding" not in frame.columns:
@@ -126,24 +161,17 @@ class SGDNDataset(RecDataset):
             for rating in self.rating_vals:
                 rating_key = str(rating)
                 rating_review = edge_reviews[rating_key]
-                graph.edges[rating_key].data["review_feat"] = rating_review.clone()
-                graph.edges[f"rev-{rating_key}"].data["review_feat"] = rating_review.clone()
-                forward_src, forward_dst = graph.edges(etype=rating_key)
-                reverse_src, reverse_dst = graph.edges(etype=f"rev-{rating_key}")
-                graph.edges[rating_key].data["src_id"] = forward_src
-                graph.edges[rating_key].data["dst_id"] = forward_dst
-                graph.edges[f"rev-{rating_key}"].data["src_id"] = reverse_src
-                graph.edges[f"rev-{rating_key}"].data["dst_id"] = reverse_dst
-                graph.edges[rating_key].data["w"] = torch.ones((rating_review.size(0), 1), dtype=torch.float32)
-                graph.edges[f"rev-{rating_key}"].data["w"] = torch.ones((rating_review.size(0), 1), dtype=torch.float32)
+                # Original SGDN keeps raw review features in review_feat_dic and lets GCMCLayer
+                # attach factor-projected review features plus learned edge weights during forward().
             self.enc_graphs.append(graph)
 
         self.rating_split = [int((ratings == float(rating)).sum()) for rating in sorted(self.rating_vals, reverse=True)]
+        self.num_train_edges = int(len(ratings))
         assert len(self.enc_graphs) == self.num_factors
         assert isinstance(self.dec_graph, self._dgl.DGLHeteroGraph)
 
     def _setup_evaluation(self, train_df, valid_df, test_df):
-        if self.split in {"valid", "test"}:
+        if self.split in {"valid", "test"} and self.train_dataset is None:
             self._build_encoder_graphs(train_df)
 
     def __len__(self):
@@ -166,3 +194,10 @@ class SGDNDataset(RecDataset):
 
 def sgdn_collate_fn(batch):
     return batch[0]
+
+
+# DIFFERENCES_FROM_ORIGINAL_SGDN:
+# - Review features come from the framework's `review_embedding` dataframe column instead of the upstream
+#   `(user_id, item_id) -> tensor` pickle cache.
+# - Decoder edges are sorted by rating descending so `rating_split=[5,4,3,2,1]` addresses contiguous
+#   contrastive-loss segments deterministically in this framework.

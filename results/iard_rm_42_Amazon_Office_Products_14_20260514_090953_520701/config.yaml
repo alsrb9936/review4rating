@@ -1,17 +1,17 @@
 training:
-  batch: 32
+  batch: 256
   training:
-    batch: 32
+    batch: 256
     eval_batch: 256
     epoch: 200
-    lr: 0.002
+    lr: 0.001
     weight_decay: 0.0
-    lr_decay: 0.95
+    grad_clip: 1.0
   eval_batch: 256
   epoch: 200
-  lr: 0.002
+  lr: 0.001
   weight_decay: 0.0
-  lr_decay: 0.95
+  grad_clip: 1.0
 evaluation:
   eval_step: 1
   evaluation:
@@ -22,32 +22,84 @@ evaluation:
     drop_cold_start_eval: true
     min_rating: 1.0
     max_rating: 5.0
+    metrics: &id001
+    - rmse
+    - mse
+    - mae
+    clamp_eval_pred: true
   early_stop_patience: 10
   best_metric_name: rmse
   eval_clip: true
   drop_cold_start_eval: true
   min_rating: 1.0
   max_rating: 5.0
+  metrics: *id001
+  clamp_eval_pred: true
 model:
   embedding_size: 64
   model:
     embedding_size: 64
-    dropout_prob: 0.5
-  dropout_prob: 0.5
-  review_count: 10
-  review_length: 40
-  word_dim: 300
-  kernel_count: 100
-  kernel_size: 3
-  filter_sizes: &id001
-  - 3
-  id_dim: 32
-  attention_size: 32
-  freeze_word_embedding: false
-  l2_reg_lambda: 0.0
-  mask_padding_attention: true
-  word_embedding_cpu: false
-  retain_rui: false
+    dropout_prob: 0.1
+    name: iard_rm
+    d_id: 64
+    d_text: 384
+    review_emb_dim: null
+    review_context_mode: history
+    history_aggregation: mean
+    history_temporal: false
+    d_model: 128
+    num_layers: 2
+    num_intents: 8
+    eta: 0.3
+    dropout: 0.1
+    tau_p: 0.2
+    gate_alpha: 5.0
+    shared_fusion_scale: 1.0
+    residual_fusion_scale: 1.0
+    fixed_gate_value: null
+  dropout_prob: 0.1
+  name: iard_rm
+  d_id: 64
+  d_text: 1536
+  review_emb_dim: 384
+  review_context_mode: history
+  history_aggregation: mean
+  history_temporal: false
+  d_model: 128
+  num_layers: 2
+  num_intents: 8
+  eta: 0.1
+  dropout: 0.1
+  tau_p: 0.2
+  gate_alpha: 5.0
+  shared_fusion_scale: 1.0
+  residual_fusion_scale: 1.0
+  fixed_gate_value: null
+  review_dim: 384
+loss:
+  loss_preset: full_iard
+  loss:
+    loss_preset: full_iard
+    lambda_rating: 1.0
+    lambda_align: 0.1
+    lambda_sep: 0.05
+    lambda_recon: 0.1
+    lambda_gate: 0.001
+    lambda_proto: 0.01
+    tau_c: 0.2
+    eps: 1e-8
+    detach_gate_for_align: true
+    detach_zx_for_recon: false
+  lambda_rating: 1.0
+  lambda_align: 0.1
+  lambda_sep: 0.05
+  lambda_recon: 0.1
+  lambda_gate: 0.001
+  lambda_proto: 0.01
+  tau_c: 0.2
+  eps: 1e-8
+  detach_gate_for_align: true
+  detach_zx_for_recon: false
 data:
   data_path: /home/infolab/mnt/mingyu/review_rec/dataset
   data:
@@ -57,10 +109,10 @@ data:
     sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
     sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
     language_model: sentence-transformers/all-MiniLM-L12-v2
-    use_review_text: true
-    use_review_embedding: false
-    compute_review_embedding: false
-    use_sentiment: false
+    use_review_text: false
+    use_review_embedding: true
+    compute_review_embedding: true
+    use_sentiment: true
     review_feature_backend: sentence_transformer
     review_emb_path: null
     use_bert_whitening: false
@@ -75,10 +127,10 @@ data:
   sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
   sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
   language_model: sentence-transformers/all-MiniLM-L12-v2
-  use_review_text: true
-  use_review_embedding: false
-  compute_review_embedding: false
-  use_sentiment: false
+  use_review_text: false
+  use_review_embedding: true
+  compute_review_embedding: true
+  use_sentiment: true
   review_feature_backend: sentence_transformer
   review_emb_path: null
   use_bert_whitening: false
@@ -88,40 +140,25 @@ data:
   bert_whitening_normalize: true
   bert_whitening_cache_scope: full
   bert_whitening_stats_path: null
-  glove_path: /home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt
-basemodel: narre
-glove_path: /home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt
-review_count: 10
-review_length: 40
-word_dim: 300
-kernel_count: 100
-kernel_size: 3
-filter_sizes: *id001
-id_dim: 32
-attention_size: 32
-freeze_word_embedding: false
-l2_reg_lambda: 0.0
-mask_padding_attention: true
-word_embedding_cpu: false
-retain_rui: false
+basemodel: iard_rm
 gpu: 3
 seed: 42
-dataset: Amazon_Musical_Instruments_14
-result_path: results/narre_42_Amazon_Musical_Instruments_14_20260514_013509_980562
+dataset: Amazon_Office_Products_14
+result_path: results/iard_rm_42_Amazon_Office_Products_14_20260514_090953_520701
 cold_start_eval_summary:
   valid:
-    num_samples_before: 1026
+    num_samples_before: 5326
     cold_user_count: 0
     cold_item_count: 0
     cold_interaction_count: 0
     removed_count: 0
-    num_samples_after: 1026
+    num_samples_after: 5326
   test:
-    num_samples_before: 1027
+    num_samples_before: 5326
     cold_user_count: 0
     cold_item_count: 0
     cold_interaction_count: 0
     removed_count: 0
-    num_samples_after: 1027
-num_users: 1429
-num_items: 900
+    num_samples_after: 5326
+num_users: 4905
+num_items: 2420

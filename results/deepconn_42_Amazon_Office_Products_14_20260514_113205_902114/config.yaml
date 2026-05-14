@@ -1,30 +1,30 @@
 training:
-  batch: 100
+  batch: 128
   training:
-    batch: 100
+    batch: 128
     eval_batch: 256
-    epoch: 40
-    lr: 0.002
-    weight_decay: 0.0
-    lr_decay: 1.0
+    epoch: 200
+    lr: 0.001
+    weight_decay: 0.01
+    lr_decay: 0.95
   eval_batch: 256
-  epoch: 40
-  lr: 0.002
-  weight_decay: 0.0
-  lr_decay: 1.0
+  epoch: 200
+  lr: 0.001
+  weight_decay: 0.01
+  lr_decay: 0.95
 evaluation:
   eval_step: 1
   evaluation:
     eval_step: 1
-    early_stop_patience: 40
+    early_stop_patience: 10
     best_metric_name: rmse
-    eval_clip: false
+    eval_clip: true
     drop_cold_start_eval: true
     min_rating: 1.0
     max_rating: 5.0
-  early_stop_patience: 40
+  early_stop_patience: 10
   best_metric_name: rmse
-  eval_clip: false
+  eval_clip: true
   drop_cold_start_eval: true
   min_rating: 1.0
   max_rating: 5.0
@@ -34,21 +34,14 @@ model:
     embedding_size: 64
     dropout_prob: 0.5
   dropout_prob: 0.5
-  narre_preprocess_mode: original
-  auto_review_shape: true
-  original_cold_start_dummy: true
-  word_dim: 300
+  review_count: 10
+  review_length: 40
+  word_dim: 50
   kernel_count: 100
   kernel_size: 3
-  filter_sizes: &id001
-  - 3
-  id_dim: 32
-  attention_size: 32
-  freeze_word_embedding: false
-  l2_reg_lambda: 0.001
-  mask_padding_attention: false
-  word_embedding_cpu: false
-  retain_rui: true
+  cnn_out_dim: 50
+  fm_k: 10
+  retain_rui: false
 data:
   data_path: /home/infolab/mnt/mingyu/review_rec/dataset
   data:
@@ -89,50 +82,35 @@ data:
   bert_whitening_normalize: true
   bert_whitening_cache_scope: full
   bert_whitening_stats_path: null
-  glove_path: /home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt
-  drop_cold_start_eval: false
-  evaluation:
-    drop_cold_start_eval: false
-basemodel: narre
-glove_path: /home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.txt
-narre_preprocess_mode: original
-auto_review_shape: true
-original_cold_start_dummy: true
-word_dim: 300
+  glove_path: /home/infolab/mnt/mingyu/review_rec/cached/others/glove.6B.50d.txt
+basemodel: deepconn
+glove_path: /home/infolab/mnt/mingyu/review_rec/cached/others/glove.6B.50d.txt
+review_count: 10
+review_length: 40
+word_dim: 50
 kernel_count: 100
 kernel_size: 3
-filter_sizes: *id001
-id_dim: 32
-attention_size: 32
-freeze_word_embedding: false
-l2_reg_lambda: 0.001
-mask_padding_attention: false
-word_embedding_cpu: false
-retain_rui: true
+cnn_out_dim: 50
+fm_k: 10
+retain_rui: false
 gpu: 3
 seed: 42
-dataset: Amazon_Musical_Instruments_14
-result_path: results/narre_42_Amazon_Musical_Instruments_14_20260514_033356_833984
+dataset: Amazon_Office_Products_14
+result_path: results/deepconn_42_Amazon_Office_Products_14_20260514_113205_902114
 cold_start_eval_summary:
   valid:
-    num_samples_before: 1026
+    num_samples_before: 5326
     cold_user_count: 0
     cold_item_count: 0
     cold_interaction_count: 0
     removed_count: 0
-    num_samples_after: 1026
+    num_samples_after: 5326
   test:
-    num_samples_before: 1027
+    num_samples_before: 5326
     cold_user_count: 0
     cold_item_count: 0
     cold_interaction_count: 0
     removed_count: 0
-    num_samples_after: 1027
-num_users: 1429
-num_items: 900
-user_review_count: 9
-item_review_count: 15
-user_review_length: 197
-item_review_length: 197
-review_count: 15
-review_length: 197
+    num_samples_after: 5326
+num_users: 4905
+num_items: 2420

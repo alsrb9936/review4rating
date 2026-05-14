@@ -39,7 +39,7 @@ training:
 evaluation:
   best_metric_name: "rmse"
   metrics: ["rmse", "mse", "mae"]
-
+  eval_clip: false
 # Data paths and settings
 data:
   use_cached_graphs: true  # Cache constructed graphs
@@ -48,4 +48,4 @@ data:
   compute_review_embedding: true
   use_sentiment: false
   review_feature_backend: "sentence_transformer"
-  use_bert_whitening: false
+  use_bert_whitening: true

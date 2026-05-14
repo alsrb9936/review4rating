@@ -20,6 +20,7 @@ model:
   graph_hidden_dim: 64
   graph_node_dim: 128
   graph_attention_dim: 32
+  sample_num: 10
   n_hops: 2
   n_heads: 8
   alpha: 0.25
@@ -37,7 +38,8 @@ model:
   lr_decay: 1.0
   min_rating: 1.0
   max_rating: 5.0
-  weight_decay: 0.0
+  weight_decay: 0.0001
+  word2vec: "/home/infolab/mnt/mingyu/review_rec/cached/others/GoogleNews-vectors-negative300.bin"
 data:
   use_review_text: true
   use_review_embedding: false
@@ -47,3 +49,4 @@ training:
   batch: 100
   epoch: 6
   lr: 0.002
+  weight_decay: 0.0001
