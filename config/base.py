@@ -181,7 +181,7 @@ class Config(dict[str, Any]):
             section[key] = value
             return
 
-    def _merge_nested(self, data: Dict[str, Any], prefix: str = "") -> None:
+    def _merge_nested(self, data: Dict[str, Any], prefix: str = "", sync_sections: bool = True) -> None:
         """Recursively merge nested dictionaries while preserving flat access."""
         for key, value in data.items():
             if isinstance(value, dict):
@@ -189,14 +189,16 @@ class Config(dict[str, Any]):
                 if not isinstance(existing, Config):
                     existing = Config()
                     super().__setitem__(key, existing)
-                existing._merge_nested(value, prefix)
-                for nested_key, nested_value in existing._iter_leaf_items():
-                    super().__setitem__(nested_key, nested_value)
+                existing._merge_nested(value, key, sync_sections=False)
+                if sync_sections and key in self.SECTION_KEY_MAP:
+                    for nested_key, nested_value in existing._iter_leaf_items():
+                        super().__setitem__(nested_key, nested_value)
             else:
                 super().__setitem__(key, value)
-                self._sync_flat_key_to_section(key, value)
+                if sync_sections:
+                    self._sync_flat_key_to_section(key, value)
     
-    def merge(self, other: Union[Dict[str, Any], 'Config']) -> 'Config':
+    def merge(self, other: Union[Dict[str, Any], 'Config'], sync_sections: bool = True) -> 'Config':
         """Merge another dictionary or Config into this one."""
         if isinstance(other, Config):
             other = dict(other)
@@ -205,12 +207,23 @@ class Config(dict[str, Any]):
             if isinstance(value, dict) and key in self and isinstance(self[key], dict):
                 if not isinstance(self[key], Config):
                     self[key] = Config(self[key])
-                self[key].merge(value)
-                for nested_key, nested_value in self[key]._iter_leaf_items():
-                    super().__setitem__(nested_key, nested_value)
+                self[key].merge(value, sync_sections=False)
+                if sync_sections and key in self.SECTION_KEY_MAP:
+                    for nested_key, nested_value in self[key]._iter_leaf_items():
+                        super().__setitem__(nested_key, nested_value)
+            elif isinstance(value, dict):
+                existing = self.get(key)
+                if not isinstance(existing, Config):
+                    existing = Config()
+                    super().__setitem__(key, existing)
+                existing.merge(value, sync_sections=False)
+                if sync_sections and key in self.SECTION_KEY_MAP:
+                    for nested_key, nested_value in existing._iter_leaf_items():
+                        super().__setitem__(nested_key, nested_value)
             else:
                 super().__setitem__(key, value)
-                self._sync_flat_key_to_section(key, value)
+                if sync_sections:
+                    self._sync_flat_key_to_section(key, value)
                 if '.' in key:
                     parts = key.split('.')
                     target = self
@@ -251,6 +264,8 @@ class Config(dict[str, Any]):
         """Convert Config to regular dictionary."""
         result = {}
         for key, value in self.items():
+            if key in self.SECTION_KEY_MAP and isinstance(value, Config):
+                continue
             if isinstance(value, Config):
                 result[key] = value.to_dict()
             else:

@@ -13,7 +13,7 @@ model:
   node_dropout: 0.8
   
   # Review feature settings
-  # sentence_transformer default is 384; CLI --bert_whitening_dim also sets review_dim.
+  # sentence-transformer cache default is 384.
   review_dim: 384
   use_review: true  # Whether to use review features
   symm: true  # Symmetric normalization
@@ -45,7 +45,6 @@ data:
   use_cached_graphs: true  # Cache constructed graphs
   use_review_text: false
   use_review_embedding: true
-  compute_review_embedding: true
+  compute_review_embedding: true  # Legacy alias; cache is loaded when present and computed only when missing.
   use_sentiment: false
-  review_feature_backend: "sentence_transformer"
-  use_bert_whitening: true
+  use_bert_whitening: false

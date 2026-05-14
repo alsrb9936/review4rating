@@ -10,15 +10,10 @@ python main.py --model narre --dataset Amazon_Video_Games_14 --mode train --gpu 
 python main.py --model deepconn --dataset Amazon_Video_Games_14 --mode train --gpu 1
 
 # RGCL: 원본 ReviewGraph에 가깝게
-python main.py --model rgcl --dataset Amazon_Video_Games_14 --mode train \
-  --review_feature_backend bert_whitening \
-  --bert_whitening_dim 64 --gpu 1
+python main.py --model rgcl --dataset Amazon_Video_Games_14 --mode train --gpu 1
 
 # SGDN: 원본 SGDN에 가깝게
-python main.py --model sgdn --dataset Amazon_Video_Games_14 --mode train \
-  --review_feature_backend bert_whitening \
-  --bert_whitening_dim 64 --gpu 1
+python main.py --model sgdn --dataset Amazon_Video_Games_14 --mode train --gpu 1
 
 # SSG: 원본 SSG에 가깝게. BERT-Whitening/embedding mode 쓰지 않음.
-python main.py --model ssg --dataset Amazon_Video_Games_14 --mode train \
-  --review_input_mode token --gpu 1
+python main.py --model ssg --dataset Amazon_Video_Games_14 --mode train --gpu 1

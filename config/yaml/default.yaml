@@ -27,9 +27,8 @@ data:
   language_model: "sentence-transformers/all-MiniLM-L12-v2"
   use_review_text: false
   use_review_embedding: false
-  compute_review_embedding: false
+  compute_review_embedding: false  # Legacy alias; use_review_embedding=true now loads cache or computes if missing.
   use_sentiment: false
-  review_feature_backend: "sentence_transformer"  # sentence_transformer | bert_whitening | cached
   review_emb_path: null
   use_bert_whitening: false
   bert_whitening_model: "bert-base-uncased"

@@ -32,7 +32,6 @@ model:
   pred_dropout: 0.0
 
   # Review feature settings
-  # CLI --bert_whitening_dim also sets review_dim in main.py.
   use_review: true
   symm: true                # project canonical alias for gcn_agg_norm_symm
 
@@ -92,7 +91,6 @@ data:
   use_cached_graphs: true
   use_review_text: false
   use_review_embedding: true
-  compute_review_embedding: true
+  compute_review_embedding: true  # Legacy alias; cache is loaded when present and computed only when missing.
   use_sentiment: false
-  review_feature_backend: "bert_whitening"
   use_bert_whitening: True

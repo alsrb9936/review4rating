@@ -45,15 +45,32 @@ def _load_cached_review_embeddings(path):
     raise ValueError(f"Unsupported review embedding format: {path}")
 
 
-def _embedding_cache_path(configs, dataset: str, backend: str, model_name: str) -> str:
+def _embedding_cache_path(configs, dataset: str, model_name: str) -> str:
     safe_model = model_name.split("/")[-1]
-    if backend == "sentence_transformer":
-        return f"{configs['embedding_path']}/{dataset}/{safe_model}.pt"
-    if backend == "bert_whitening":
+    return f"{configs['embedding_path']}/{dataset}/{safe_model}.pt"
+
+
+def _legacy_embedding_cache_paths(configs, dataset: str, model_name: str, use_bert_whitening: bool) -> list[str]:
+    safe_model = model_name.split("/")[-1]
+    cache_dir = f"{configs['embedding_path']}/{dataset}"
+    if use_bert_whitening:
         dim = int(configs.get("bert_whitening_dim", configs.get("review_dim", 64)))
         pooling = configs.get("bert_whitening_pooling", "cls")
-        return f"{configs['embedding_path']}/{dataset}/{backend}_{safe_model}_{pooling}_{dim}.pt"
-    return f"{configs['embedding_path']}/{dataset}/{backend}_{safe_model}.pt"
+        return [f"{cache_dir}/bert_whitening_{safe_model}_{pooling}_{dim}.pt"]
+    return [f"{cache_dir}/sentence_transformer_{safe_model}.pt"]
+
+
+def _load_or_migrate_review_embedding_cache(cache_path: str, legacy_paths: list[str]) -> tuple[Optional[list[object]], Optional[str]]:
+    if os.path.exists(cache_path):
+        return _load_cached_review_embeddings(cache_path), cache_path
+    for legacy_path in legacy_paths:
+        if os.path.exists(legacy_path):
+            review_embeddings = _load_cached_review_embeddings(legacy_path)
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            torch.save(review_embeddings, cache_path)
+            print(f"Migrated review embedding cache {legacy_path} -> {cache_path}")
+            return review_embeddings, legacy_path
+    return None, None
 
 
 def _bert_whitening_full_stats_path(embedding_path: str) -> str:
@@ -121,7 +138,7 @@ def _bert_whitening_cache_paths(configs) -> tuple[str, str]:
     dim = int(configs.get("bert_whitening_dim", configs.get("review_dim", 64)))
     split_protocol = str(configs.get("split_protocol", "default"))
     seed = int(configs.get("seed", 42))
-    cache_name = f"bert_whitening_{model_name}_{pooling}_{dim}_{split_protocol}_seed{seed}"
+    cache_name = f"{model_name}_{pooling}_{dim}_{split_protocol}_seed{seed}"
     cache_dir = os.path.join(str(configs["embedding_path"]), dataset)
     return os.path.join(cache_dir, f"{cache_name}.pt"), os.path.join(cache_dir, f"{cache_name}_stats.pt")
 
@@ -146,7 +163,7 @@ def _bert_whitening_cache_signatures(train_df: pd.DataFrame, valid_df: pd.DataFr
 
 
 def attach_bert_whitening_review_features(train_df, valid_df, test_df, configs):
-    if str(configs.get("review_feature_backend", "sentence_transformer")) != "bert_whitening":
+    if not bool(configs.get("use_bert_whitening", False)):
         return train_df, valid_df, test_df
     if str(configs.get("bert_whitening_cache_scope", "full")) == "full":
         return train_df, valid_df, test_df
@@ -217,12 +234,9 @@ def load_interaction_data(configs):
     compute_review_embedding = bool(configs.get("compute_review_embedding", False))
     use_sentiment = bool(configs.get("use_sentiment", False))
     use_bert_whitening = bool(configs.get("use_bert_whitening", False))
-    review_feature_backend = str(configs.get("review_feature_backend", "sentence_transformer"))
+    wants_review_embedding = use_review_embedding or compute_review_embedding or use_bert_whitening
 
-    if review_feature_backend not in {"sentence_transformer", "bert_whitening", "cached"}:
-        raise ValueError("review_feature_backend must be sentence_transformer, bert_whitening, or cached.")
-
-    if (use_review_embedding or compute_review_embedding or use_bert_whitening) and not use_review_text:
+    if wants_review_embedding and not use_review_text:
         print(f"[WARN] use_review_text=False but review embedding/BERT-Whitening is requested. Auto-enabling use_review_text=True.")
         use_review_text = True
 
@@ -248,41 +262,58 @@ def load_interaction_data(configs):
         inter_df.columns = inter_df.columns.str.split(':').str[0]
         print("Loaded interaction data only (no review text)")
 
-    if use_review_embedding or use_bert_whitening:
+    if wants_review_embedding:
         print("Get embedding from review...")
         configured_review_emb_path = configs.get("review_emb_path")
-        if review_feature_backend == "cached" and not configured_review_emb_path:
-            raise ValueError("review_feature_backend='cached' requires review_emb_path.")
         backend_model_name = str(configs.get("bert_whitening_model", "bert-base-uncased")) if use_bert_whitening else model_name
-        embedding_path = configured_review_emb_path if review_feature_backend == "cached" else _embedding_cache_path(configs, dataset, review_feature_backend, backend_model_name)
+        embedding_path = str(configured_review_emb_path) if configured_review_emb_path else _embedding_cache_path(configs, dataset, backend_model_name)
+        configs["review_emb_path"] = embedding_path
 
         if use_bert_whitening:
             cache_scope = str(configs.get("bert_whitening_cache_scope", "full"))
             if cache_scope == "full":
                 stats_path = configs.get("bert_whitening_stats_path") or _bert_whitening_full_stats_path(embedding_path)
                 configs["bert_whitening_stats_path"] = stats_path
-                if os.path.exists(embedding_path):
-                    print(f"Load cached full BERT-Whitening review embeddings from {embedding_path}")
-                    review_embeddings = _load_cached_review_embeddings(embedding_path)
-                    if len(review_embeddings) != len(inter_df):
-                        raise ValueError(
-                            f"Cached embeddings length {len(review_embeddings)} != inter_df length {len(inter_df)}"
-                        )
+                review_embeddings, loaded_path = _load_or_migrate_review_embedding_cache(
+                    embedding_path,
+                    _legacy_embedding_cache_paths(configs, dataset, backend_model_name, use_bert_whitening=True),
+                )
+                if review_embeddings is not None:
+                    print(f"Load cached full BERT-Whitening review embeddings from {loaded_path}")
                 else:
                     print("Fit BERT-Whitening stats on all reviews and cache full-dataset embeddings...")
                     review_embeddings = _compute_bert_whitening_for_frame(inter_df, configs, str(stats_path), fit=True)
                     os.makedirs(os.path.dirname(embedding_path), exist_ok=True)
                     torch.save(review_embeddings, embedding_path)
                     print(f"Saved full BERT-Whitening review embeddings to {embedding_path}")
+                if len(review_embeddings) != len(inter_df):
+                    raise ValueError(
+                        f"Cached embeddings length {len(review_embeddings)} != inter_df length {len(inter_df)}"
+                    )
                 _validate_review_dim(review_embeddings, configs)
                 inter_df["review_embedding"] = review_embeddings
             else:
                 print("BERT-Whitening embeddings are fit after train/valid/test split to avoid whitening-stat leakage.")
                 inter_df["review_embedding"] = [None] * len(inter_df)
-        elif review_feature_backend == "cached":
-            if not os.path.exists(embedding_path):
-                raise FileNotFoundError(f"Review embedding file not found: {embedding_path}")
-            review_embeddings = _load_cached_review_embeddings(embedding_path)
+        else:
+            review_embeddings, loaded_path = _load_or_migrate_review_embedding_cache(
+                embedding_path,
+                _legacy_embedding_cache_paths(configs, dataset, model_name, use_bert_whitening=False),
+            )
+            if review_embeddings is not None:
+                print(f"Load cached review embeddings from {loaded_path}")
+            else:
+                print(f"Cached review embeddings not found. Computing and saving to {embedding_path}")
+                review_embeddings = [None] * len(inter_df)
+                non_empty_idx = [i for i, text in enumerate(inter_df["reviewText"].tolist()) if text]
+                if non_empty_idx:
+                    non_empty_texts = [inter_df.iloc[i]["reviewText"] for i in non_empty_idx]
+                    predicted_embeddings = get_embedding_batch(model_name, non_empty_texts, batch_size=8, gpu_id=gpu_id)
+                    for idx, emb in zip(non_empty_idx, predicted_embeddings):
+                        review_embeddings[idx] = emb
+                os.makedirs(os.path.dirname(embedding_path), exist_ok=True)
+                torch.save(review_embeddings, embedding_path)
+                print(f"Saved review embeddings to {embedding_path}")
             if len(review_embeddings) != len(inter_df):
                 raise ValueError(
                     f"Cached embeddings length {len(review_embeddings)} != inter_df length {len(inter_df)}"
@@ -292,24 +323,6 @@ def load_interaction_data(configs):
                 configs["review_dim"] = actual_dim
             _validate_review_dim(review_embeddings, configs)
             inter_df["review_embedding"] = review_embeddings
-        elif compute_review_embedding:
-            review_embeddings = [None] * len(inter_df)
-            non_empty_idx = [i for i, text in enumerate(inter_df["reviewText"].tolist()) if text]
-            if non_empty_idx:
-                non_empty_texts = [inter_df.iloc[i]["reviewText"] for i in non_empty_idx]
-                predicted_embeddings = get_embedding_batch(model_name, non_empty_texts, batch_size=8, gpu_id=gpu_id)
-                for idx, emb in zip(non_empty_idx, predicted_embeddings):
-                    review_embeddings[idx] = emb
-            os.makedirs(os.path.dirname(embedding_path), exist_ok=True)
-            torch.save(review_embeddings, embedding_path)
-            actual_dim = _infer_embedding_dim(review_embeddings)
-            if actual_dim is not None:
-                configs["review_dim"] = actual_dim
-            _validate_review_dim(review_embeddings, configs)
-            inter_df["review_embedding"] = review_embeddings
-        else:
-            print("use_review_embedding=True but compute_review_embedding=False and backend is not cached/bert_whitening. Skipping embedding computation.")
-            inter_df["review_embedding"] = [None] * len(inter_df)
     else:
         print("Skipping review embeddings (use_review_embedding=False, use_bert_whitening=False)")
 

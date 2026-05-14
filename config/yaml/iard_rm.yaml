@@ -9,10 +9,10 @@ model:
   history_aggregation: "mean"
   history_temporal: false
   d_model: 128
-  num_layers: 2
-  num_intents: 8
-  eta: 0.3
-  dropout: 0.1
+  num_layers: 1
+  num_intents: 5
+  eta: 0.6
+  dropout: 0.2
   tau_p: 0.2
   gate_alpha: 5.0
   shared_fusion_scale: 1.0
@@ -33,10 +33,10 @@ loss:
   detach_zx_for_recon: false
 
 training:
-  batch: 256
-  eval_batch: 256
+  batch: 64
+  eval_batch: 64
   epoch: 200
-  lr: 0.001
+  lr: 0.0002
   weight_decay: 0.0
   grad_clip: 1.0
 
@@ -50,6 +50,6 @@ evaluation:
 data:
   use_review_text: false
   use_review_embedding: true
-  compute_review_embedding: true
+  compute_review_embedding: true  # Legacy alias; cache is loaded when present and computed only when missing.
   use_sentiment: true
   review_emb_path: null

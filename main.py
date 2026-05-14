@@ -29,8 +29,9 @@ def apply_iard_loss_preset(configs):
         return
 
     preset = configs.get('loss_preset', 'full_iard')
+
     full_defaults = {
-        'eta': 0.1,
+        'eta': 0.3,
         'shared_fusion_scale': 1.0,
         'residual_fusion_scale': 1.0,
         'fixed_gate_value': None,
@@ -40,6 +41,7 @@ def apply_iard_loss_preset(configs):
         'lambda_gate': 0.001,
         'lambda_proto': 0.01,
     }
+
     preset_overrides = {
         'rating_only': {
             **full_defaults,
@@ -61,22 +63,16 @@ def apply_iard_loss_preset(configs):
             'lambda_gate': 0.0,
             'lambda_proto': 0.0,
         },
-        'align_only': {
-            **full_defaults,
-            'shared_fusion_scale': 1.0,
-            'residual_fusion_scale': 0.0,
-            'lambda_align': 0.1,
-            'lambda_sep': 0.0,
-            'lambda_recon': 0.0,
-            'lambda_gate': 0.0,
-            'lambda_proto': 0.0,
-        },
         'full_iard': {
             **full_defaults,
         },
         'full_no_sep': {
             **full_defaults,
             'lambda_sep': 0.0,
+        },
+        'full_low_align': {
+            **full_defaults,
+            'lambda_align': 0.05,
         },
         'full_no_residual_pred': {
             **full_defaults,
@@ -86,23 +82,20 @@ def apply_iard_loss_preset(configs):
             **full_defaults,
             'fixed_gate_value': 0.5,
         },
-        'full_eta_0_3': {
-            **full_defaults,
-            'eta': 0.3,
-        },
-        'full_low_align': {
-            **full_defaults,
-            'lambda_align': 0.05,
-        },
     }
+
     if preset not in preset_overrides:
         raise ValueError(f"Unsupported IARD loss preset: {preset}")
-    # Presets are intentionally non-destructive: model YAMLs and CLI overrides are
-    # treated as explicit experiment settings, so presets only fill absent/null keys.
-    # Use CLI flags (or a derived YAML) for ablations that need to change a value
-    # already defined in config/yaml/iard_rm.yaml.
-    resolved = {key: value for key, value in preset_overrides[preset].items() if configs.get(key) is None}
-    configs.merge(resolved)
+
+    explicit_keys = configs.get('_explicit_iard_keys', [])
+    explicit_values = {
+        key: configs.get(key)
+        for key in explicit_keys
+        if configs.get(key) is not None
+    }
+
+    configs.merge(preset_overrides[preset])
+    configs.merge(explicit_values)
 
 
 def args_parser():
