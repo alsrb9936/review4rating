@@ -47,11 +47,18 @@ class BaseTrainer:
         self.dataset_name = configs.get('dataset', 'unknown')
     
     def _create_optimizer(self):
-        return torch.optim.Adam(
-            self.model.parameters(), 
-            lr=self.configs.get('lr', 0.001),
-            weight_decay=self.configs.get('weight_decay', 0)
+        lr = float(self.configs.get('lr', 0.001))
+        weight_decay = float(self.configs.get('weight_decay', 0.0))
+        bias_params = [p for n, p in self.model.named_parameters() if p.requires_grad and ('bias' in n.lower() or 'global_bias' in n.lower())]
+        other_params = [p for n, p in self.model.named_parameters() if p.requires_grad and not ('bias' in n.lower() or 'global_bias' in n.lower())]
+        optimizer = torch.optim.Adam([
+            {'params': other_params, 'lr': lr, 'weight_decay': weight_decay},
+            {'params': bias_params, 'lr': lr, 'weight_decay': 0.0},
+        ])
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6, verbose=True
         )
+        return optimizer
     
     def train_epoch(self, epoch_idx):
         raise NotImplementedError("Subclasses must implement train_epoch()")
@@ -151,6 +158,9 @@ class BaseTrainer:
                 else:
                     self.patience_counter += 1
                     print(f"  Patience: {self.patience_counter}/{self.early_stop_patience}")
+                
+                if hasattr(self, 'scheduler') and self.scheduler is not None:
+                    self.scheduler.step(current_metric)
                 
                 if self.patience_counter >= self.early_stop_patience:
                     print(f"Early stopping triggered after {epoch+1} epochs")

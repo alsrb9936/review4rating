@@ -126,6 +126,12 @@ def args_parser():
     parser.add_argument("--lambda_recon", type=float, default=None)
     parser.add_argument("--lambda_gate", type=float, default=None)
     parser.add_argument("--lambda_proto", type=float, default=None)
+    parser.add_argument("--weight_decay", type=float, default=None)
+    parser.add_argument("--dropout", type=float, default=None)
+    parser.add_argument("--d_model", type=int, default=None)
+    parser.add_argument("--d_id", type=int, default=None)
+    parser.add_argument("--early_stop_patience", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
     return parser.parse_args()
 
 
@@ -381,6 +387,12 @@ def main():
         'lambda_recon': args.lambda_recon,
         'lambda_gate': args.lambda_gate,
         'lambda_proto': args.lambda_proto,
+        'weight_decay': args.weight_decay,
+        'dropout': args.dropout,
+        'd_model': args.d_model,
+        'd_id': args.d_id,
+        'early_stop_patience': args.early_stop_patience,
+        'lr': args.lr,
     }
     provided_iard_keys = [
         key for key in (

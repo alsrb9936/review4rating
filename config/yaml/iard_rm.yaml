@@ -7,7 +7,7 @@ model:
   review_emb_dim: null
   review_context_mode: "history"
   history_aggregation: "mean"
-  history_encoder: "mean"
+  history_encoder: "attention"
   history_top_k: 50
   history_temporal: false
   retain_rui: false
