@@ -12,10 +12,18 @@ class IARDRMDataset(RecDataset):
         self.review_context_mode = str(configs.get("review_context_mode", "history")).lower()
         if self.review_context_mode not in {"target", "history"}:
             raise ValueError("review_context_mode must be either 'target' or 'history'.")
+        if split in {"valid", "test"} and self.review_context_mode == "target":
+            raise ValueError("IARD-RM valid/test cannot use target review embeddings; use review_context_mode='history'.")
         self.history_temporal = bool(configs.get("history_temporal", False))
         self.history_aggregation = str(configs.get("history_aggregation", "mean")).lower()
         if self.history_aggregation != "mean":
             raise ValueError("IARD-RM history mode currently supports only mean aggregation.")
+        self.history_encoder = str(configs.get("history_encoder", "mean")).lower()
+        if self.history_encoder not in {"mean", "attention"}:
+            raise ValueError("history_encoder must be either 'mean' or 'attention'.")
+        self.history_top_k = int(configs.get("history_top_k", 10))
+        if self.history_top_k <= 0:
+            raise ValueError("history_top_k must be positive.")
         self.has_timestamp = "timestamp" in df.columns
         self.user_ids = torch.as_tensor(df["user_id"].to_numpy(dtype=np.int64), dtype=torch.long)
         self.item_ids = torch.as_tensor(df["item_id"].to_numpy(dtype=np.int64), dtype=torch.long)
@@ -32,7 +40,14 @@ class IARDRMDataset(RecDataset):
         self.interactions = self._build_interactions(df, raw_review_emb)
         if self.review_context_mode == "history":
             if split == "train":
-                self.review_emb, self.empty_history_mask = self._build_history_review_embeddings(
+                (
+                    self.review_emb,
+                    self.empty_history_mask,
+                    self.user_history_emb,
+                    self.user_history_mask,
+                    self.item_history_emb,
+                    self.item_history_mask,
+                ) = self._build_history_review_embeddings(
                     target_interactions=self.interactions,
                     history_interactions=self.interactions,
                     exclude_target=True,
@@ -41,6 +56,8 @@ class IARDRMDataset(RecDataset):
             else:
                 self.review_emb = torch.zeros((len(self.interactions), int(configs["d_text"])), dtype=torch.float32)
                 self.empty_history_mask = torch.ones(len(self.interactions), dtype=torch.bool)
+                self.user_history_emb, self.user_history_mask = self._empty_history_sequences(len(self.interactions))
+                self.item_history_emb, self.item_history_mask = self._empty_history_sequences(len(self.interactions))
                 self.history_context_ready = False
             self.review_source_used = torch.ones(len(self.interactions), dtype=torch.long)
         else:
@@ -48,6 +65,8 @@ class IARDRMDataset(RecDataset):
                 raise RuntimeError("Target review embeddings must be loaded in target review context mode.")
             self.review_emb = raw_review_emb
             self.empty_history_mask = torch.zeros(len(self.interactions), dtype=torch.bool)
+            self.user_history_emb, self.user_history_mask = self._empty_history_sequences(len(self.interactions))
+            self.item_history_emb, self.item_history_mask = self._empty_history_sequences(len(self.interactions))
             self.review_source_used = torch.zeros(len(self.interactions), dtype=torch.long)
             self.history_context_ready = True
         self.edge_index = self._build_edge_index(df)
@@ -216,6 +235,45 @@ class IARDRMDataset(RecDataset):
                         stats["prefix_sums"] = cumulative
         return by_user, by_item
 
+    def _empty_history_sequences(self, num_rows):
+        raw_dim = int(self.configs["review_emb_dim"])
+        return (
+            torch.zeros((num_rows, self.history_top_k, raw_dim), dtype=torch.float32),
+            torch.zeros((num_rows, self.history_top_k), dtype=torch.bool),
+        )
+
+    def _select_history_entries(self, stats, target, exclude_target):
+        if stats is None:
+            return []
+
+        entries = list(stats["entries"])
+        if exclude_target:
+            entries = [entry for entry in entries if entry is not target]
+
+        if self.history_temporal and self.has_timestamp:
+            target_timestamp = target["timestamp"]
+            if target_timestamp is None:
+                return []
+            entries = [entry for entry in entries if entry["timestamp"] is not None and entry["timestamp"] < target_timestamp]
+
+        entries = [entry for entry in entries if entry.get("review_emb") is not None]
+        if self.history_temporal and self.has_timestamp:
+            entries = sorted(entries, key=lambda entry: entry["timestamp"])
+        return entries[-self.history_top_k:]
+
+    def _build_history_sequence(self, entries):
+        raw_dim = int(self.configs["review_emb_dim"])
+        history_emb = torch.zeros((self.history_top_k, raw_dim), dtype=torch.float32)
+        history_mask = torch.zeros(self.history_top_k, dtype=torch.bool)
+        if not entries:
+            return history_emb, history_mask
+
+        start = self.history_top_k - len(entries)
+        for offset, entry in enumerate(entries):
+            history_emb[start + offset] = entry["review_emb"]
+            history_mask[start + offset] = True
+        return history_emb, history_mask
+
     def _aggregate_history(self, stats, target, exclude_target):
         if stats is None:
             raw_dim = int(self.configs["review_emb_dim"])
@@ -262,6 +320,10 @@ class IARDRMDataset(RecDataset):
         by_user, by_item = self._build_history_stats(history_interactions)
         fused_embeddings = []
         empty_masks = []
+        user_history_embeddings = []
+        user_history_masks = []
+        item_history_embeddings = []
+        item_history_masks = []
         for target in target_interactions:
             user_hist_emb, user_empty = self._aggregate_history(
                 by_user.get(target["user_id"]),
@@ -275,10 +337,40 @@ class IARDRMDataset(RecDataset):
             )
             fused_embeddings.append(self._fuse_history_embeddings(user_hist_emb, item_hist_emb))
             empty_masks.append(bool(user_empty or item_empty))
+            user_entries = self._select_history_entries(
+                by_user.get(target["user_id"]),
+                target=target,
+                exclude_target=exclude_target,
+            )
+            item_entries = self._select_history_entries(
+                by_item.get(target["item_id"]),
+                target=target,
+                exclude_target=exclude_target,
+            )
+            user_history_emb, user_history_mask = self._build_history_sequence(user_entries)
+            item_history_emb, item_history_mask = self._build_history_sequence(item_entries)
+            user_history_embeddings.append(user_history_emb)
+            user_history_masks.append(user_history_mask)
+            item_history_embeddings.append(item_history_emb)
+            item_history_masks.append(item_history_mask)
         if not fused_embeddings:
             raw_dim = int(self.configs["review_emb_dim"])
-            return torch.empty((0, raw_dim * 4), dtype=torch.float32), torch.empty((0,), dtype=torch.bool)
-        return torch.stack(fused_embeddings, dim=0), torch.tensor(empty_masks, dtype=torch.bool)
+            return (
+                torch.empty((0, raw_dim * 4), dtype=torch.float32),
+                torch.empty((0,), dtype=torch.bool),
+                torch.empty((0, self.history_top_k, raw_dim), dtype=torch.float32),
+                torch.empty((0, self.history_top_k), dtype=torch.bool),
+                torch.empty((0, self.history_top_k, raw_dim), dtype=torch.float32),
+                torch.empty((0, self.history_top_k), dtype=torch.bool),
+            )
+        return (
+            torch.stack(fused_embeddings, dim=0),
+            torch.tensor(empty_masks, dtype=torch.bool),
+            torch.stack(user_history_embeddings, dim=0),
+            torch.stack(user_history_masks, dim=0),
+            torch.stack(item_history_embeddings, dim=0),
+            torch.stack(item_history_masks, dim=0),
+        )
 
     def _build_edge_index(self, frame):
         user_array = frame["user_id"].to_numpy(dtype=np.int64)
@@ -300,13 +392,27 @@ class IARDRMDataset(RecDataset):
         if self.review_context_mode == "history":
             train_review_emb = self._load_review_embeddings(train_df, self.configs)
             train_interactions = self._build_interactions(train_df, train_review_emb)
-            self.review_emb, self.empty_history_mask = self._build_history_review_embeddings(
+            (
+                self.review_emb,
+                self.empty_history_mask,
+                self.user_history_emb,
+                self.user_history_mask,
+                self.item_history_emb,
+                self.item_history_mask,
+            ) = self._build_history_review_embeddings(
                 target_interactions=self.interactions,
                 history_interactions=train_interactions,
                 exclude_target=False,
             )
             self.review_source_used = torch.ones(len(self.interactions), dtype=torch.long)
             self.history_context_ready = True
+            print(
+                f"IARD-RM {self.split} history context: source=train_only, "
+                f"encoder={self.history_encoder}, top_k={self.history_top_k}, "
+                f"target_review_used=False, empty_ratio={float(self.empty_history_mask.float().mean().item()) if len(self.empty_history_mask) else 0.0:.4f}"
+            )
+        else:
+            raise RuntimeError("IARD-RM evaluation setup requires history mode to avoid target review leakage.")
 
     def __len__(self):
         return len(self.user_ids)
@@ -319,6 +425,10 @@ class IARDRMDataset(RecDataset):
             "item_ids": self.item_ids[idx].clone().detach(),
             "ratings": self.ratings[idx].clone().detach(),
             "review_emb": self.review_emb[idx].clone().detach(),
+            "user_history_emb": self.user_history_emb[idx].clone().detach(),
+            "user_history_mask": self.user_history_mask[idx].clone().detach(),
+            "item_history_emb": self.item_history_emb[idx].clone().detach(),
+            "item_history_mask": self.item_history_mask[idx].clone().detach(),
             "review_source_used": self.review_source_used[idx].clone().detach(),
             "empty_history_mask": self.empty_history_mask[idx].clone().detach(),
         }

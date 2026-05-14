@@ -1,0 +1,98 @@
+training:
+  batch: 64
+  eval_batch: 64
+  epoch: 200
+  lr: 0.0002
+  weight_decay: 0.0
+  grad_clip: 1.0
+evaluation:
+  eval_step: 1
+  early_stop_patience: 10
+  best_metric_name: rmse
+  eval_clip: true
+  drop_cold_start_eval: true
+  min_rating: 1.0
+  max_rating: 5.0
+  metrics:
+  - rmse
+  - mse
+  - mae
+  clamp_eval_pred: true
+model:
+  embedding_size: 64
+  dropout_prob: 0.1
+  name: iard_rm
+  d_id: 64
+  d_text: 1536
+  review_emb_dim: 384
+  review_context_mode: history
+  history_aggregation: mean
+  history_temporal: false
+  d_model: 128
+  num_layers: 1
+  num_intents: 5
+  eta: 0.3
+  dropout: 0.2
+  tau_p: 0.2
+  gate_alpha: 5.0
+  shared_fusion_scale: 1.0
+  residual_fusion_scale: 1.0
+  fixed_gate_value: null
+  disentangler_mode: independent
+  review_dim: 384
+loss:
+  loss_preset: full_iard
+  lambda_rating: 1.0
+  lambda_align: 0.1
+  lambda_sep: 0.05
+  lambda_recon: 0.1
+  lambda_gate: 0.001
+  lambda_proto: 0.01
+  tau_c: 0.2
+  eps: 1e-8
+  detach_gate_for_align: true
+  detach_zx_for_recon: false
+data:
+  data_path: /home/infolab/mnt/mingyu/review_rec/dataset
+  other_path: /home/infolab/mnt/mingyu/review_rec/cached/others
+  embedding_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding
+  sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
+  sentiment_model: cardiffnlp/twitter-roberta-base-sentiment-latest
+  language_model: sentence-transformers/all-MiniLM-L12-v2
+  use_review_text: false
+  use_review_embedding: true
+  compute_review_embedding: true
+  use_sentiment: true
+  review_emb_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding/Amazon_Musical_Instruments_14/all-MiniLM-L12-v2.pt
+  use_bert_whitening: false
+  bert_whitening_model: bert-base-uncased
+  bert_whitening_dim: 64
+  bert_whitening_pooling: cls
+  bert_whitening_normalize: true
+  bert_whitening_cache_scope: full
+  bert_whitening_stats_path: null
+basemodel: iard_rm
+gpu: 0
+seed: 42
+_explicit_iard_keys:
+- loss_preset
+- disentangler_mode
+dataset: Amazon_Musical_Instruments_14
+result_path: results/iard_rm_42_Amazon_Musical_Instruments_14_20260514_141953_141981
+cold_start_eval_summary:
+  valid:
+    num_samples_before: 1026
+    cold_user_count: 0
+    cold_item_count: 0
+    cold_interaction_count: 0
+    removed_count: 0
+    num_samples_after: 1026
+  test:
+    num_samples_before: 1027
+    cold_user_count: 0
+    cold_item_count: 0
+    cold_interaction_count: 0
+    removed_count: 0
+    num_samples_after: 1027
+num_users: 1429
+num_items: 900

@@ -69,6 +69,8 @@ class Config(dict[str, Any]):
             "review_emb_dim",
             "review_context_mode",
             "history_aggregation",
+            "history_encoder",
+            "history_top_k",
             "history_temporal",
             "d_model",
             "num_intents",
@@ -78,6 +80,7 @@ class Config(dict[str, Any]):
             "shared_fusion_scale",
             "residual_fusion_scale",
             "fixed_gate_value",
+            "disentangler_mode",
             "ssg_preset",
         },
         "loss": {

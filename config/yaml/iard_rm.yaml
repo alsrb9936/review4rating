@@ -7,6 +7,8 @@ model:
   review_emb_dim: null
   review_context_mode: "history"
   history_aggregation: "mean"
+  history_encoder: "mean"
+  history_top_k: 10
   history_temporal: false
   d_model: 128
   num_layers: 1
@@ -18,6 +20,7 @@ model:
   shared_fusion_scale: 1.0
   residual_fusion_scale: 1.0
   fixed_gate_value: null
+  disentangler_mode: "conditioned"
 
 loss:
   loss_preset: full_iard

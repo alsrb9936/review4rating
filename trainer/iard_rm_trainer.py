@@ -35,6 +35,10 @@ def inspect_iard_batch(model, loss_computer, batch, edge_index, edge_weight=None
     item_ids = batch["item_ids"].to(device)
     ratings = batch["ratings"].to(device)
     review_emb = batch["review_emb"].to(device)
+    user_history_emb = batch.get("user_history_emb")
+    user_history_mask = batch.get("user_history_mask")
+    item_history_emb = batch.get("item_history_emb")
+    item_history_mask = batch.get("item_history_mask")
     edge_index = edge_index.to(device)
     if edge_weight is not None:
         edge_weight = edge_weight.to(device)
@@ -46,6 +50,10 @@ def inspect_iard_batch(model, loss_computer, batch, edge_index, edge_weight=None
         review_emb=review_emb,
         edge_index=edge_index,
         edge_weight=edge_weight,
+        user_history_emb=user_history_emb.to(device) if user_history_emb is not None else None,
+        user_history_mask=user_history_mask.to(device) if user_history_mask is not None else None,
+        item_history_emb=item_history_emb.to(device) if item_history_emb is not None else None,
+        item_history_mask=item_history_mask.to(device) if item_history_mask is not None else None,
     )
     loss_dict = loss_computer(
         output=output,
@@ -170,6 +178,10 @@ class IARDRMTrainer(BaseTrainer):
             item_ids = batch["item_ids"].to(self.device)
             ratings = batch["ratings"].to(self.device)
             review_emb = batch["review_emb"].to(self.device)
+            user_history_emb = batch.get("user_history_emb")
+            user_history_mask = batch.get("user_history_mask")
+            item_history_emb = batch.get("item_history_emb")
+            item_history_mask = batch.get("item_history_mask")
 
             output = self.model(
                 user_ids=user_ids,
@@ -177,6 +189,10 @@ class IARDRMTrainer(BaseTrainer):
                 review_emb=review_emb,
                 edge_index=edge_index,
                 edge_weight=edge_weight,
+                user_history_emb=user_history_emb.to(self.device) if user_history_emb is not None else None,
+                user_history_mask=user_history_mask.to(self.device) if user_history_mask is not None else None,
+                item_history_emb=item_history_emb.to(self.device) if item_history_emb is not None else None,
+                item_history_mask=item_history_mask.to(self.device) if item_history_mask is not None else None,
             )
             loss_dict = self.loss_computer(
                 output=output,
@@ -255,6 +271,14 @@ class IARDRMTrainer(BaseTrainer):
             item_ids = batch["item_ids"].to(self.device)
             ratings = batch["ratings"].to(self.device)
             review_emb = batch["review_emb"].to(self.device)
+            user_history_emb = batch.get("user_history_emb")
+            user_history_mask = batch.get("user_history_mask")
+            item_history_emb = batch.get("item_history_emb")
+            item_history_mask = batch.get("item_history_mask")
+            review_source_used = batch.get("review_source_used")
+            if phase in {"valid", "test"} and review_source_used is not None:
+                if not torch.all(review_source_used == 1):
+                    raise RuntimeError(f"IARD-RM {phase} must use train-history context, not target reviews.")
 
             output = self.model(
                 user_ids=user_ids,
@@ -262,6 +286,10 @@ class IARDRMTrainer(BaseTrainer):
                 review_emb=review_emb,
                 edge_index=edge_index,
                 edge_weight=edge_weight,
+                user_history_emb=user_history_emb.to(self.device) if user_history_emb is not None else None,
+                user_history_mask=user_history_mask.to(self.device) if user_history_mask is not None else None,
+                item_history_emb=item_history_emb.to(self.device) if item_history_emb is not None else None,
+                item_history_mask=item_history_mask.to(self.device) if item_history_mask is not None else None,
             )
             predictions = output["pred"]
 
@@ -279,7 +307,6 @@ class IARDRMTrainer(BaseTrainer):
             empty_history_mask = batch.get("empty_history_mask")
             if empty_history_mask is not None:
                 all_empty_history.append(empty_history_mask.detach().cpu().numpy().astype(np.float32))
-            review_source_used = batch.get("review_source_used")
             if review_source_used is not None:
                 all_review_source.append(review_source_used.detach().cpu().numpy())
 
@@ -312,6 +339,13 @@ class IARDRMTrainer(BaseTrainer):
         metrics["mean_intent_entropy"], _ = _summarize_distribution(intent_entropy_values)
         if empty_history_values is not None:
             metrics["mean_empty_history_ratio"] = float(empty_history_values.mean())
+        if review_source_values is not None and phase in {"valid", "test"}:
+            metrics["history_source_ratio"] = float(np.mean(review_source_values == 1))
+            print(
+                f"IARD-RM {phase} leakage check: history_source_ratio={metrics['history_source_ratio']:.4f}, "
+                f"target_review_used={bool(np.any(review_source_values == 0))}, "
+                f"empty_history_ratio={metrics.get('mean_empty_history_ratio', 0.0):.4f}"
+            )
         metrics.update(self._build_alignment_group_metrics(alignment_values, predictions, ratings))
 
         if phase == "test":
@@ -350,6 +384,10 @@ class IARDRMTrainer(BaseTrainer):
             review_emb=batch["review_emb"].to(self.device),
             edge_index=edge_index,
             edge_weight=edge_weight,
+            user_history_emb=batch["user_history_emb"].to(self.device) if "user_history_emb" in batch else None,
+            user_history_mask=batch["user_history_mask"].to(self.device) if "user_history_mask" in batch else None,
+            item_history_emb=batch["item_history_emb"].to(self.device) if "item_history_emb" in batch else None,
+            item_history_mask=batch["item_history_mask"].to(self.device) if "item_history_mask" in batch else None,
         )
         return output["pred"]
 
@@ -382,6 +420,8 @@ def run_iard_trainer_sanity_check():
         "detach_zx_for_recon": False,
         "review_context_mode": "history",
         "history_aggregation": "mean",
+        "history_encoder": "attention",
+        "history_top_k": 2,
         "history_temporal": False,
     }
     import pandas as pd
@@ -401,6 +441,10 @@ def run_iard_trainer_sanity_check():
         "item_ids": dataset.item_ids[:4],
         "ratings": dataset.ratings[:4],
         "review_emb": dataset.review_emb[:4],
+        "user_history_emb": dataset.user_history_emb[:4],
+        "user_history_mask": dataset.user_history_mask[:4],
+        "item_history_emb": dataset.item_history_emb[:4],
+        "item_history_mask": dataset.item_history_mask[:4],
         "empty_history_mask": dataset.empty_history_mask[:4],
         "review_source_used": dataset.review_source_used[:4],
     }
@@ -410,6 +454,10 @@ def run_iard_trainer_sanity_check():
         review_emb=batch["review_emb"],
         edge_index=dataset.edge_index,
         edge_weight=dataset.edge_weight,
+        user_history_emb=batch["user_history_emb"],
+        user_history_mask=batch["user_history_mask"],
+        item_history_emb=batch["item_history_emb"],
+        item_history_mask=batch["item_history_mask"],
     )
     loss_dict = model.loss_computer(output=output, ratings=batch["ratings"], prototypes=model.intent_extractor.prototypes)
     loss = loss_dict["loss"]

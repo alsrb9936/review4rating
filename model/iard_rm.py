@@ -90,6 +90,47 @@ class ReviewProjectionEncoder(nn.Module):
         return self.layer_norm(self.encoder(review_emb))
 
 
+class HistoryAttentionEncoder(nn.Module):
+    def __init__(self, raw_dim=768, d_model=128):
+        super().__init__()
+        self.raw_dim = int(raw_dim)
+        self.d_model = int(d_model)
+        self.key_projection = nn.Linear(self.raw_dim, self.d_model)
+        self._init_weights()
+
+    def _init_weights(self):
+        nn.init.xavier_uniform_(self.key_projection.weight)
+        if self.key_projection.bias is not None:
+            nn.init.zeros_(self.key_projection.bias)
+
+    def _attend(self, query, history_emb, history_mask):
+        key = self.key_projection(history_emb)
+        scores = torch.sum(query.unsqueeze(1) * key, dim=-1) / float(self.d_model) ** 0.5
+        history_mask = history_mask.bool()
+        scores = scores.masked_fill(~history_mask, torch.finfo(scores.dtype).min)
+        attention = torch.softmax(scores, dim=-1)
+        has_history = history_mask.any(dim=-1, keepdim=True)
+        attention = torch.where(has_history, attention, torch.zeros_like(attention))
+        return torch.sum(attention.unsqueeze(-1) * history_emb, dim=1)
+
+    @staticmethod
+    def _fuse(user_context, item_context):
+        return torch.cat(
+            [
+                user_context,
+                item_context,
+                user_context * item_context,
+                torch.abs(user_context - item_context),
+            ],
+            dim=-1,
+        )
+
+    def forward(self, query, user_history_emb, user_history_mask, item_history_emb, item_history_mask):
+        user_context = self._attend(query, user_history_emb, user_history_mask)
+        item_context = self._attend(query, item_history_emb, item_history_mask)
+        return self._fuse(user_context, item_context)
+
+
 class PrototypeIntentExtractor(nn.Module):
     def __init__(self, d_model=128, num_intents=8, tau_p=0.2):
         super().__init__()
@@ -115,9 +156,15 @@ class PrototypeIntentExtractor(nn.Module):
 
 
 class SharedResidualDisentangler(nn.Module):
-    def __init__(self, d_model=128, dropout=0.1):
+    def __init__(self, d_model=128, dropout=0.1, disentangler_mode="conditioned"):
         super().__init__()
-        pair_dim = d_model * 4
+        self.disentangler_mode = str(disentangler_mode)
+        if self.disentangler_mode == "conditioned":
+            pair_dim = d_model * 4
+        elif self.disentangler_mode == "independent":
+            pair_dim = d_model
+        else:
+            raise ValueError(f"Unsupported disentangler_mode: {self.disentangler_mode}")
         self.shared_mlp = nn.Sequential(
             nn.Linear(pair_dim, d_model),
             nn.GELU(),
@@ -149,7 +196,10 @@ class SharedResidualDisentangler(nn.Module):
                     nn.init.zeros_(module.bias)
 
     def forward(self, zX, zY):
-        pair_representation = torch.cat([zX, zY, zX * zY, torch.abs(zX - zY)], dim=-1)
+        if self.disentangler_mode == "conditioned":
+            pair_representation = torch.cat([zX, zY, zX * zY, torch.abs(zX - zY)], dim=-1)
+        else:
+            pair_representation = zX
         zS = self.shared_norm(self.shared_mlp(pair_representation))
         zR = self.residual_norm(self.residual_mlp(pair_representation))
         recon_zX = self.recon_norm(self.recon_mlp(torch.cat([zS, zR], dim=-1)))
@@ -316,6 +366,16 @@ class IARDRM(AbstractRec):
         self.shared_fusion_scale = float(configs.get("shared_fusion_scale", 1.0))
         self.residual_fusion_scale = float(configs.get("residual_fusion_scale", 1.0))
         self.fixed_gate_value = configs.get("fixed_gate_value")
+        self.disentangler_mode = configs.get("disentangler_mode", "conditioned")
+        self.history_encoder = str(configs.get("history_encoder", "mean")).lower()
+        if self.history_encoder not in {"mean", "attention"}:
+            raise ValueError("history_encoder must be either 'mean' or 'attention'.")
+        self.review_emb_dim = int(configs.get("review_emb_dim", self.d_text // 4 if self.d_text % 4 == 0 else self.d_text))
+
+        self.user_bias = nn.Embedding(self.num_users, 1)
+        self.item_bias = nn.Embedding(self.num_items, 1)
+        self.global_bias = nn.Parameter(torch.tensor(self._get_initial_global_bias(train_dataset), dtype=torch.float32))
+        self._init_bias_terms()
 
         self.rating_encoder = RatingGraphEncoder(
             num_users=self.num_users,
@@ -329,6 +389,10 @@ class IARDRM(AbstractRec):
             d_model=self.d_model,
             dropout=self.dropout,
         )
+        self.history_attention_encoder = HistoryAttentionEncoder(
+            raw_dim=self.review_emb_dim,
+            d_model=self.d_model,
+        )
         self.intent_extractor = PrototypeIntentExtractor(
             d_model=self.d_model,
             num_intents=self.num_intents,
@@ -337,6 +401,7 @@ class IARDRM(AbstractRec):
         self.disentangler = SharedResidualDisentangler(
             d_model=self.d_model,
             dropout=self.dropout,
+            disentangler_mode=self.disentangler_mode,
         )
         self.gate = InconsistencyGate(
             d_model=self.d_model,
@@ -353,27 +418,67 @@ class IARDRM(AbstractRec):
         )
         self.loss_computer = IARDLossComputer(configs)
 
+    @staticmethod
+    def _get_initial_global_bias(train_dataset):
+        ratings = getattr(train_dataset, "ratings", None)
+        if ratings is None:
+            return 0.0
+        if torch.is_tensor(ratings):
+            if ratings.numel() == 0:
+                return 0.0
+            return float(ratings.float().mean().item())
+        try:
+            ratings_tensor = torch.as_tensor(ratings, dtype=torch.float32)
+        except (TypeError, ValueError):
+            return 0.0
+        if ratings_tensor.numel() == 0:
+            return 0.0
+        return float(ratings_tensor.mean().item())
+
+    def _init_bias_terms(self):
+        nn.init.zeros_(self.user_bias.weight)
+        nn.init.zeros_(self.item_bias.weight)
+
     def forward(self, *args, **kwargs):
         if args:
             user_ids, item_ids, review_emb, edge_index = args[:4]
             edge_weight = args[4] if len(args) > 4 else None
+            user_history_emb = None
+            user_history_mask = None
+            item_history_emb = None
+            item_history_mask = None
         else:
             user_ids = kwargs["user_ids"]
             item_ids = kwargs["item_ids"]
             review_emb = kwargs["review_emb"]
             edge_index = kwargs["edge_index"]
             edge_weight = kwargs.get("edge_weight")
+            user_history_emb = kwargs.get("user_history_emb")
+            user_history_mask = kwargs.get("user_history_mask")
+            item_history_emb = kwargs.get("item_history_emb")
+            item_history_mask = kwargs.get("item_history_mask")
         zY = self.rating_encoder(
             user_ids=user_ids,
             item_ids=item_ids,
             edge_index=edge_index,
             edge_weight=edge_weight,
         )
+        if self.history_encoder == "attention":
+            if user_history_emb is None or user_history_mask is None or item_history_emb is None or item_history_mask is None:
+                raise ValueError("history_encoder='attention' requires user/item history embeddings and masks.")
+            review_emb = self.history_attention_encoder(
+                query=zY,
+                user_history_emb=user_history_emb.to(zY.device),
+                user_history_mask=user_history_mask.to(zY.device),
+                item_history_emb=item_history_emb.to(zY.device),
+                item_history_mask=item_history_mask.to(zY.device),
+            )
         hX = self.review_encoder(review_emb)
         zX, intent_weights = self.intent_extractor(hX)
         zS, zR, recon_zX = self.disentangler(zX, zY)
         alignment, p_inc, gate = self.gate(zY, zS, zR)
         pred, yY, yS, yR = self.predictor(zY, zS, zR, gate)
+        pred = pred + self.user_bias(user_ids).squeeze(-1) + self.item_bias(item_ids).squeeze(-1) + self.global_bias
         return {
             "pred": pred,
             "zY": zY,
@@ -399,6 +504,10 @@ class IARDRM(AbstractRec):
             review_emb=batch_data["review_emb"],
             edge_index=batch_data["edge_index"],
             edge_weight=batch_data.get("edge_weight"),
+            user_history_emb=batch_data.get("user_history_emb"),
+            user_history_mask=batch_data.get("user_history_mask"),
+            item_history_emb=batch_data.get("item_history_emb"),
+            item_history_mask=batch_data.get("item_history_mask"),
         )
         loss_dict = self.loss_computer(
             output=output,
@@ -492,9 +601,46 @@ def run_iard_rm_sanity_check():
     for tensor_name, tensor_value in output.items():
         if torch.is_tensor(tensor_value) and torch.isnan(tensor_value).any():
             raise AssertionError(f"{tensor_name} contains NaN")
+    attention_configs = dict(configs)
+    attention_configs.update(
+        {
+            "d_text": 768 * 4,
+            "review_emb_dim": 768,
+            "history_encoder": "attention",
+            "history_top_k": 3,
+        }
+    )
+    attention_model = IARDRM(attention_configs, _DummyDataset())
+    user_history_emb = torch.randn(batch_size, 3, 768, dtype=torch.float32)
+    item_history_emb = torch.randn(batch_size, 3, 768, dtype=torch.float32)
+    user_history_mask = torch.tensor(
+        [[True, True, False], [False, False, False], [True, False, False], [True, True, True]],
+        dtype=torch.bool,
+    )
+    item_history_mask = torch.tensor(
+        [[True, False, False], [True, True, False], [False, False, False], [True, True, True]],
+        dtype=torch.bool,
+    )
+    attention_output = attention_model(
+        user_ids=user_ids,
+        item_ids=item_ids,
+        review_emb=torch.zeros(batch_size, 768 * 4, dtype=torch.float32),
+        edge_index=edge_index,
+        edge_weight=None,
+        user_history_emb=user_history_emb,
+        user_history_mask=user_history_mask,
+        item_history_emb=item_history_emb,
+        item_history_mask=item_history_mask,
+    )
+    if attention_output["pred"].shape != (batch_size,):
+        raise AssertionError(f"attention pred shape mismatch: {attention_output['pred'].shape}")
+    for tensor_name, tensor_value in attention_output.items():
+        if torch.is_tensor(tensor_value) and torch.isnan(tensor_value).any():
+            raise AssertionError(f"attention {tensor_name} contains NaN")
     return {
         "loss": float(loss.detach().item()),
         "pred_shape": tuple(output["pred"].shape),
+        "attention_pred_shape": tuple(attention_output["pred"].shape),
         "zY_shape": tuple(output["zY"].shape),
         "zS_shape": tuple(output["zS"].shape),
         "zR_shape": tuple(output["zR"].shape),

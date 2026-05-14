@@ -117,6 +117,9 @@ def args_parser():
     parser.add_argument("--shared_fusion_scale", type=float, default=None)
     parser.add_argument("--residual_fusion_scale", type=float, default=None)
     parser.add_argument("--gate_alpha", type=float, default=None)
+    parser.add_argument("--disentangler_mode", type=str, default=None, choices=["conditioned", "independent"])
+    parser.add_argument("--history_encoder", type=str, default=None, choices=["mean", "attention"])
+    parser.add_argument("--history_top_k", type=int, default=None)
     parser.add_argument("--lambda_align", type=float, default=None)
     parser.add_argument("--lambda_sep", type=float, default=None)
     parser.add_argument("--lambda_recon", type=float, default=None)
@@ -287,6 +290,9 @@ def eval_mode(args):
         'shared_fusion_scale': getattr(args, 'shared_fusion_scale', None),
         'residual_fusion_scale': getattr(args, 'residual_fusion_scale', None),
         'gate_alpha': getattr(args, 'gate_alpha', None),
+        'disentangler_mode': getattr(args, 'disentangler_mode', None),
+        'history_encoder': getattr(args, 'history_encoder', None),
+        'history_top_k': getattr(args, 'history_top_k', None),
         'lambda_align': getattr(args, 'lambda_align', None),
         'lambda_sep': getattr(args, 'lambda_sep', None),
         'lambda_recon': getattr(args, 'lambda_recon', None),
@@ -364,6 +370,9 @@ def main():
         'shared_fusion_scale': args.shared_fusion_scale,
         'residual_fusion_scale': args.residual_fusion_scale,
         'gate_alpha': args.gate_alpha,
+        'disentangler_mode': args.disentangler_mode,
+        'history_encoder': args.history_encoder,
+        'history_top_k': args.history_top_k,
         'lambda_align': args.lambda_align,
         'lambda_sep': args.lambda_sep,
         'lambda_recon': args.lambda_recon,
@@ -377,6 +386,7 @@ def main():
             'shared_fusion_scale',
             'residual_fusion_scale',
             'gate_alpha',
+            'disentangler_mode',
             'lambda_align',
             'lambda_sep',
             'lambda_recon',
