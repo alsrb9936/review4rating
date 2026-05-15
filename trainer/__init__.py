@@ -4,6 +4,7 @@ from .narre_trainer import NARRETrainer
 from .ssg_trainer import SSGTrainer
 from .rgcl_trainer import RGCLTrainer
 from .scg_rgcl_trainer import SCGRGCLTrainer
+from .ma_rgcl_trainer import MARGCLTrainer
 from .iard_rm_trainer import IARDRMTrainer
 from .iarm_rm_senti_trainer import IARMRMSentiTrainer
 from .sgdn_trainer import SGDNTrainer
@@ -16,6 +17,7 @@ MODEL_TRAINER_DICT = {
     "ssg": SSGTrainer,
     "rgcl": RGCLTrainer,
     "scg_rgcl": SCGRGCLTrainer,
+    "ma_rgcl": MARGCLTrainer,
     "iard_rm": IARDRMTrainer,
     "iarm_rm_senti": IARMRMSentiTrainer,
     "sgdn": SGDNTrainer,

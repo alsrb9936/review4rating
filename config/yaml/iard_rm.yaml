@@ -1,13 +1,12 @@
-basemodel: "iard_rm"
-
+basemodel: iard_rm
 model:
-  name: "iard_rm"
+  name: iard_rm
   d_id: 64
   d_text: 384
   review_emb_dim: null
-  review_context_mode: "history"
-  history_aggregation: "mean"
-  history_encoder: "attention"
+  review_context_mode: history
+  history_aggregation: mean
+  history_encoder: attention
   history_top_k: 50
   history_temporal: false
   retain_rui: false
@@ -21,8 +20,7 @@ model:
   shared_fusion_scale: 1.0
   residual_fusion_scale: 1.0
   fixed_gate_value: null
-  disentangler_mode: "conditioned"
-
+  disentangler_mode: conditioned
 loss:
   loss_preset: full_iard
   lambda_rating: 1.0
@@ -35,7 +33,6 @@ loss:
   eps: 1e-8
   detach_gate_for_align: true
   detach_zx_for_recon: false
-
 training:
   batch: 64
   eval_batch: 64
@@ -43,17 +40,18 @@ training:
   lr: 0.0002
   weight_decay: 0.0
   grad_clip: 1.0
-
 evaluation:
   eval_step: 1
   early_stop_patience: 10
-  best_metric_name: "rmse"
-  metrics: ["rmse", "mse", "mae"]
+  best_metric_name: rmse
+  metrics:
+  - rmse
+  - mse
+  - mae
   clamp_eval_pred: true
-
 data:
   use_review_text: false
   use_review_embedding: true
-  compute_review_embedding: true  # Legacy alias; cache is loaded when present and computed only when missing.
+  compute_review_embedding: true
   use_sentiment: true
   review_emb_path: null

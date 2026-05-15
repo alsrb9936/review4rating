@@ -601,6 +601,11 @@ def get_dataloader(train_df, valid_df, test_df, configs):
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=scg_rgcl_collate_fn)
         valid_dataloader = DataLoader(valid_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=scg_rgcl_collate_fn)
         test_dataloader = DataLoader(test_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=scg_rgcl_collate_fn)
+    elif model_name == 'ma_rgcl':
+        from data.ma_rgcl_dataset import ma_rgcl_collate_fn
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=ma_rgcl_collate_fn)
+        valid_dataloader = DataLoader(valid_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=ma_rgcl_collate_fn)
+        test_dataloader = DataLoader(test_dataset, batch_size=eval_batch_size, shuffle=False, collate_fn=ma_rgcl_collate_fn)
     elif model_name == 'sgdn':
         from data.sgdn_dataset import sgdn_collate_fn
         train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=sgdn_collate_fn)

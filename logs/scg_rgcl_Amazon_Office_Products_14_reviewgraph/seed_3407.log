@@ -1,0 +1,353 @@
+prepare data
+load interaction data from /home/infolab/mnt/mingyu/review_rec/dataset
+[WARN] use_review_text=False but review embedding/BERT-Whitening is requested. Auto-enabling use_review_text=True.
+Merged interaction and review data
+Get embedding from review...
+Load cached review embeddings from /home/infolab/mnt/mingyu/review_rec/cached/embedding/Amazon_Musical_Instruments_14/all-MiniLM-L12-v2.pt
+Get sentiment from review (mode=5-class)...
+Load cached sentiment from /home/infolab/mnt/mingyu/review_rec/cached/sentiment/Amazon_Musical_Instruments_14/5class_twitter-roberta-large-topic-sentiment-latest.pt
+Completed Get Embedding and Sentiment Data
+
+Apply id mapping...
+Completed Apply Id Mapping
+
+[ReviewGraph Split] before migration:
+  train: n=8209, rating_mean=4.4906, rating_std=0.8897, distribution={1.0: 171, 2.0: 195, 3.0: 612, 4.0: 1689, 5.0: 5542}
+  valid: n=1026, rating_mean=4.4942, rating_std=0.9184, distribution={1.0: 24, 2.0: 30, 3.0: 70, 4.0: 193, 5.0: 709}
+  test: n=1026, rating_mean=4.4688, rating_std=0.9104, distribution={1.0: 22, 2.0: 25, 3.0: 90, 4.0: 202, 5.0: 687}
+[ReviewGraph Split] after migration:
+  train: n=8209, rating_mean=4.4906, rating_std=0.8897, distribution={1.0: 171, 2.0: 195, 3.0: 612, 4.0: 1689, 5.0: 5542}
+  valid: n=1026, rating_mean=4.4942, rating_std=0.9184, distribution={1.0: 24, 2.0: 30, 3.0: 70, 4.0: 193, 5.0: 709}
+  test: n=1026, rating_mean=4.4688, rating_std=0.9104, distribution={1.0: 22, 2.0: 25, 3.0: 90, 4.0: 202, 5.0: 687}
+Cold-start valid: before=1026, cold_user_rows=0, cold_item_rows=0, cold_either_rows=0, removed=0, after=1026, drop_cold_start_eval=True
+Cold-start test: before=1026, cold_user_rows=0, cold_item_rows=0, cold_either_rows=0, removed=0, after=1026, drop_cold_start_eval=True
+[SCG_RGCL:train] sentiment calibration table:
+  class 0 strong negative -> mean rating 3.1073
+  class 1 negative -> mean rating 2.6440
+  class 2 neutral -> mean rating 4.1308
+  class 3 positive -> mean rating 4.7264
+  class 4 strong positive -> mean rating 4.9183
+[SCG_RGCL:train] train edge distance: mean=0.0844, std=0.0676, min=0.0001, max=1.0000
+[SCG_RGCL:valid] sentiment calibration table:
+  class 0 strong negative -> mean rating 3.1073
+  class 1 negative -> mean rating 2.6440
+  class 2 neutral -> mean rating 4.1308
+  class 3 positive -> mean rating 4.7264
+  class 4 strong positive -> mean rating 4.9183
+[SCG_RGCL:valid] train edge distance: mean=0.0844, std=0.0676, min=0.0001, max=1.0000
+[SCG_RGCL:test] sentiment calibration table:
+  class 0 strong negative -> mean rating 3.1073
+  class 1 negative -> mean rating 2.6440
+  class 2 neutral -> mean rating 4.1308
+  class 3 positive -> mean rating 4.7264
+  class 4 strong positive -> mean rating 4.9183
+[SCG_RGCL:test] train edge distance: mean=0.0844, std=0.0676, min=0.0001, max=1.0000
+Config saved to results/scg_rgcl_3407_Amazon_Musical_Instruments_14_20260515_042734_689604/config.yaml
+Creating model and trainer...
+Starting training...
+Starting training for 400 epochs
+Model: scg_rgcl
+Dataset: Amazon_Musical_Instruments_14
+Device: cuda:3
+Best metric: rmse
+Epoch 1:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 1: 100%|██████████| 1/1 [00:00<00:00,  2.09it/s]Epoch 1: 100%|██████████| 1/1 [00:00<00:00,  2.09it/s]
+Epoch 1/400 - Total Loss: 3.4137
+  Validation Metrics:
+  mse: 2.5885
+  rmse: 1.6089
+  mae: 1.5139
+  New Best! rmse: 1.6089
+Epoch 2:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 2: 100%|██████████| 1/1 [00:00<00:00, 18.45it/s]
+Epoch 2/400 - Total Loss: 3.2580
+  Validation Metrics:
+  mse: 1.2714
+  rmse: 1.1276
+  mae: 0.9879
+  New Best! rmse: 1.1276
+Epoch 3:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 3: 100%|██████████| 1/1 [00:00<00:00, 22.18it/s]
+Epoch 3/400 - Total Loss: 2.9749
+  Validation Metrics:
+  mse: 0.8696
+  rmse: 0.9325
+  mae: 0.6134
+  New Best! rmse: 0.9325
+Epoch 4:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 4: 100%|██████████| 1/1 [00:00<00:00, 25.97it/s]
+Epoch 4/400 - Total Loss: 3.0986
+  Validation Metrics:
+  mse: 0.8502
+  rmse: 0.9221
+  mae: 0.7106
+  New Best! rmse: 0.9221
+Epoch 5:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 5: 100%|██████████| 1/1 [00:00<00:00, 24.67it/s]
+Epoch 5/400 - Total Loss: 2.9351
+  Validation Metrics:
+  mse: 0.9635
+  rmse: 0.9816
+  mae: 0.8245
+  Patience: 1/10
+Epoch 6:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 6: 100%|██████████| 1/1 [00:00<00:00, 18.93it/s]
+Epoch 6/400 - Total Loss: 2.8469
+  Validation Metrics:
+  mse: 0.9671
+  rmse: 0.9834
+  mae: 0.8291
+  Patience: 2/10
+Epoch 7:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 7: 100%|██████████| 1/1 [00:00<00:00, 27.51it/s]
+Epoch 7/400 - Total Loss: 2.8004
+  Validation Metrics:
+  mse: 0.8690
+  rmse: 0.9322
+  mae: 0.7482
+  Patience: 3/10
+Epoch 00007: reducing learning rate of group 0 to 5.0000e-03.
+Epoch 00007: reducing learning rate of group 1 to 5.0000e-03.
+Epoch 8:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 8: 100%|██████████| 1/1 [00:00<00:00, 14.53it/s]
+Epoch 8/400 - Total Loss: 2.7677
+  Validation Metrics:
+  mse: 0.8370
+  rmse: 0.9149
+  mae: 0.7058
+  New Best! rmse: 0.9149
+Epoch 9:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 9: 100%|██████████| 1/1 [00:00<00:00, 21.17it/s]
+Epoch 9/400 - Total Loss: 2.7574
+  Validation Metrics:
+  mse: 0.8247
+  rmse: 0.9081
+  mae: 0.6780
+  New Best! rmse: 0.9081
+Epoch 10:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 10: 100%|██████████| 1/1 [00:00<00:00, 18.20it/s]
+Epoch 10/400 - Total Loss: 2.7334
+  Validation Metrics:
+  mse: 0.8210
+  rmse: 0.9061
+  mae: 0.6623
+  New Best! rmse: 0.9061
+Epoch 11:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 11: 100%|██████████| 1/1 [00:00<00:00, 17.79it/s]
+Epoch 11/400 - Total Loss: 2.7086
+  Validation Metrics:
+  mse: 0.8199
+  rmse: 0.9055
+  mae: 0.6576
+  New Best! rmse: 0.9055
+Epoch 12:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 12: 100%|██████████| 1/1 [00:00<00:00, 22.44it/s]
+Epoch 12/400 - Total Loss: 2.6919
+  Validation Metrics:
+  mse: 0.8188
+  rmse: 0.9049
+  mae: 0.6600
+  New Best! rmse: 0.9049
+Epoch 13:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 13: 100%|██████████| 1/1 [00:00<00:00, 20.03it/s]
+Epoch 13/400 - Total Loss: 2.6703
+  Validation Metrics:
+  mse: 0.8162
+  rmse: 0.9034
+  mae: 0.6629
+  New Best! rmse: 0.9034
+Epoch 14:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 14: 100%|██████████| 1/1 [00:00<00:00, 24.94it/s]
+Epoch 14/400 - Total Loss: 2.6364
+  Validation Metrics:
+  mse: 0.8125
+  rmse: 0.9014
+  mae: 0.6638
+  New Best! rmse: 0.9014
+Epoch 15:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 15: 100%|██████████| 1/1 [00:00<00:00, 18.94it/s]
+Epoch 15/400 - Total Loss: 2.6164
+  Validation Metrics:
+  mse: 0.8083
+  rmse: 0.8990
+  mae: 0.6613
+  New Best! rmse: 0.8990
+Epoch 16:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 16: 100%|██████████| 1/1 [00:00<00:00, 17.15it/s]
+Epoch 16/400 - Total Loss: 2.6131
+  Validation Metrics:
+  mse: 0.8050
+  rmse: 0.8972
+  mae: 0.6568
+  New Best! rmse: 0.8972
+Epoch 17:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 17: 100%|██████████| 1/1 [00:00<00:00, 17.32it/s]
+Epoch 17/400 - Total Loss: 2.6053
+  Validation Metrics:
+  mse: 0.8040
+  rmse: 0.8966
+  mae: 0.6516
+  New Best! rmse: 0.8966
+Epoch 18:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 18: 100%|██████████| 1/1 [00:00<00:00, 18.02it/s]
+Epoch 18/400 - Total Loss: 2.5958
+  Validation Metrics:
+  mse: 0.8047
+  rmse: 0.8970
+  mae: 0.6464
+  Patience: 1/10
+Epoch 19:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 19: 100%|██████████| 1/1 [00:00<00:00, 22.10it/s]
+Epoch 19/400 - Total Loss: 2.5787
+  Validation Metrics:
+  mse: 0.8063
+  rmse: 0.8980
+  mae: 0.6415
+  Patience: 2/10
+Epoch 20:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 20: 100%|██████████| 1/1 [00:00<00:00, 20.29it/s]
+Epoch 20/400 - Total Loss: 2.5572
+  Validation Metrics:
+  mse: 0.8072
+  rmse: 0.8984
+  mae: 0.6384
+  Patience: 3/10
+Epoch 00020: reducing learning rate of group 0 to 2.5000e-03.
+Epoch 00020: reducing learning rate of group 1 to 2.5000e-03.
+Epoch 21:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 21: 100%|██████████| 1/1 [00:00<00:00, 19.91it/s]
+Epoch 21/400 - Total Loss: 2.5616
+  Validation Metrics:
+  mse: 0.8069
+  rmse: 0.8983
+  mae: 0.6384
+  Patience: 4/10
+Epoch 22:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 22: 100%|██████████| 1/1 [00:00<00:00, 25.94it/s]
+Epoch 22/400 - Total Loss: 2.5440
+  Validation Metrics:
+  mse: 0.8059
+  rmse: 0.8977
+  mae: 0.6396
+  Patience: 5/10
+Epoch 23:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 23: 100%|██████████| 1/1 [00:00<00:00, 16.85it/s]
+Epoch 23/400 - Total Loss: 2.5397
+  Validation Metrics:
+  mse: 0.8045
+  rmse: 0.8969
+  mae: 0.6425
+  Patience: 6/10
+Epoch 00023: reducing learning rate of group 0 to 1.2500e-03.
+Epoch 00023: reducing learning rate of group 1 to 1.2500e-03.
+Epoch 24:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 24: 100%|██████████| 1/1 [00:00<00:00, 21.34it/s]
+Epoch 24/400 - Total Loss: 2.5373
+  Validation Metrics:
+  mse: 0.8038
+  rmse: 0.8965
+  mae: 0.6439
+  New Best! rmse: 0.8965
+Epoch 25:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 25: 100%|██████████| 1/1 [00:00<00:00, 17.22it/s]
+Epoch 25/400 - Total Loss: 2.5151
+  Validation Metrics:
+  mse: 0.8031
+  rmse: 0.8962
+  mae: 0.6452
+  New Best! rmse: 0.8962
+Epoch 26:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 26: 100%|██████████| 1/1 [00:00<00:00, 18.80it/s]
+Epoch 26/400 - Total Loss: 2.5132
+  Validation Metrics:
+  mse: 0.8026
+  rmse: 0.8959
+  mae: 0.6461
+  New Best! rmse: 0.8959
+Epoch 27:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 27: 100%|██████████| 1/1 [00:00<00:00, 19.47it/s]
+Epoch 27/400 - Total Loss: 2.5281
+  Validation Metrics:
+  mse: 0.8022
+  rmse: 0.8956
+  mae: 0.6465
+  New Best! rmse: 0.8956
+Epoch 28:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 28: 100%|██████████| 1/1 [00:00<00:00, 18.51it/s]
+Epoch 28/400 - Total Loss: 2.5167
+  Validation Metrics:
+  mse: 0.8019
+  rmse: 0.8955
+  mae: 0.6463
+  New Best! rmse: 0.8955
+Epoch 29:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 29: 100%|██████████| 1/1 [00:00<00:00, 18.53it/s]
+Epoch 29/400 - Total Loss: 2.5078
+  Validation Metrics:
+  mse: 0.8018
+  rmse: 0.8955
+  mae: 0.6455
+  New Best! rmse: 0.8955
+Epoch 30:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 30: 100%|██████████| 1/1 [00:00<00:00, 21.05it/s]
+Epoch 30/400 - Total Loss: 2.5123
+  Validation Metrics:
+  mse: 0.8018
+  rmse: 0.8955
+  mae: 0.6448
+  Patience: 1/10
+Epoch 31:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 31: 100%|██████████| 1/1 [00:00<00:00, 26.68it/s]
+Epoch 31/400 - Total Loss: 2.5082
+  Validation Metrics:
+  mse: 0.8019
+  rmse: 0.8955
+  mae: 0.6437
+  Patience: 2/10
+Epoch 00031: reducing learning rate of group 0 to 6.2500e-04.
+Epoch 00031: reducing learning rate of group 1 to 6.2500e-04.
+Epoch 32:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 32: 100%|██████████| 1/1 [00:00<00:00, 17.64it/s]
+Epoch 32/400 - Total Loss: 2.5006
+  Validation Metrics:
+  mse: 0.8019
+  rmse: 0.8955
+  mae: 0.6431
+  Patience: 3/10
+Epoch 33:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 33: 100%|██████████| 1/1 [00:00<00:00, 24.85it/s]
+Epoch 33/400 - Total Loss: 2.5053
+  Validation Metrics:
+  mse: 0.8019
+  rmse: 0.8955
+  mae: 0.6425
+  Patience: 4/10
+Epoch 34:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 34: 100%|██████████| 1/1 [00:00<00:00, 18.68it/s]
+Epoch 34/400 - Total Loss: 2.4981
+  Validation Metrics:
+  mse: 0.8019
+  rmse: 0.8955
+  mae: 0.6418
+  Patience: 5/10
+Epoch 00034: reducing learning rate of group 0 to 3.1250e-04.
+Epoch 00034: reducing learning rate of group 1 to 3.1250e-04.
+Epoch 35:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 35: 100%|██████████| 1/1 [00:00<00:00, 18.15it/s]
+Epoch 35/400 - Total Loss: 2.4820
+  Validation Metrics:
+  mse: 0.8019
+  rmse: 0.8955
+  mae: 0.6414
+  Patience: 6/10
+Epoch 36:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 36: 100%|██████████| 1/1 [00:00<00:00, 21.86it/s]
+Epoch 36/400 - Total Loss: 2.4917
+  Validation Metrics:
+  mse: 0.8019
+  rmse: 0.8955
+  mae: 0.6410
+  Patience: 7/10
+Epoch 37:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 37: 100%|██████████| 1/1 [00:00<00:00, 23.28it/s]
+Epoch 37/400 - Total Loss: 2.4934
+  Validation Metrics:
+  mse: 0.8019
+  rmse: 0.8955
+  mae: 0.6406
+  Patience: 8/10
+Epoch 00037: reducing learning rate of group 0 to 1.5625e-04.
+Epoch 00037: reducing learning rate of group 1 to 1.5625e-04.
+Epoch 38:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 38: 100%|██████████| 1/1 [00:00<00:00, 20.58it/s]
+Epoch 38/400 - Total Loss: 2.4874
+  Validation Metrics:
+  mse: 0.8019
+  rmse: 0.8955
+  mae: 0.6404
+  Patience: 9/10
+Epoch 39:   0%|          | 0/1 [00:00<?, ?it/s]Epoch 39: 100%|██████████| 1/1 [00:00<00:00, 20.66it/s]
+Epoch 39/400 - Total Loss: 2.4895
+  Validation Metrics:
+  mse: 0.8019
+  rmse: 0.8955
+  mae: 0.6401
+  Patience: 10/10
+Early stopping triggered after 39 epochs
+Training completed!
+
+==================================================
+Loading best model and evaluating on test set...
+==================================================
+[SCG_RGCL Test] raw_pred: min=3.3175, max=4.8880, mean=4.5078
+[SCG_RGCL Test] eval_clip=False, final_pred: min=3.3175, max=4.8880, mean=4.5078
+[SCG_RGCL Test] gate_stats: mean=0.8593, std=0.0402, min=0.2481, max=0.8968, mean_edge_misalign=0.0844
+
+Test Results:
+  mse: 0.7785
+  rmse: 0.8824
+  mae: 0.6452
+
+Results saved to results/scg_rgcl_3407_Amazon_Musical_Instruments_14_20260515_042734_689604/test_results.json

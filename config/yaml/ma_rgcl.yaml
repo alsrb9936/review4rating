@@ -1,0 +1,52 @@
+model:
+  name: ma_rgcl
+  embedding_size: 64
+  num_layers: 1
+  dropout: 0.3
+  node_dropout: 0.5
+  review_dim: 384
+  use_review: true
+  symm: true
+  use_contrastive: true
+  classification: true
+  nd_weight: 0.1
+  ed_weight: 1.0
+  align_weight: 0.05
+  residual_weight: 0.002
+  gate_hidden_dim: 32
+  epsilon: 0.1
+  lambda_residual: 0.25
+  temperature: 0.2
+  edge_temperature: 0.5
+  decoder_review_mode: generated
+  review_generation_weight: 0.01
+  log_gate_stats: true
+  use_sentiment_confidence: true
+  calibrate_sentiment_to_rating: false
+  use_raw_sentiment_distance: true
+  sentiment_label_col: null
+  sentiment_prob_cols: null
+training:
+  batch: 1
+  eval_batch: 1
+  epoch: 400
+  lr: 0.003
+  weight_decay: 1.0e-05
+  early_stop_patience: 50
+  grad_clip: 0.5
+  eval_step: 1
+evaluation:
+  best_metric_name: rmse
+  metrics:
+  - rmse
+  - mse
+  - mae
+  eval_clip: false
+data:
+  use_cached_graphs: true
+  use_review_text: false
+  use_review_embedding: true
+  compute_review_embedding: true
+  use_sentiment: true
+  sentiment_mode: 5
+  use_bert_whitening: false

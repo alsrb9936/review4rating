@@ -1,0 +1,31 @@
+{
+  "metric": "rmse",
+  "mode": "min",
+  "best_score": 0.8757550928222921,
+  "best_params": {
+    "training.lr": 0.003,
+    "training.weight_decay": 1e-05,
+    "training.grad_clip": 0.5,
+    "model.embedding_size": 64,
+    "model.num_layers": 1,
+    "model.dropout": 0.3,
+    "model.node_dropout": 0.5,
+    "model.nd_weight": 0.1,
+    "model.ed_weight": 1.0,
+    "model.align_weight": 0.05,
+    "model.residual_weight": 0.002,
+    "model.gate_hidden_dim": 32,
+    "model.epsilon": 0.1,
+    "model.lambda_residual": 0.25,
+    "model.review_generation_weight": 0.01
+  },
+  "best_result": {
+    "trial_name": "round1_model.review_generation_weight_0.01",
+    "params": "{\"training.lr\": 0.003, \"training.weight_decay\": 1e-05, \"training.grad_clip\": 0.5, \"model.embedding_size\": 64, \"model.num_layers\": 1, \"model.dropout\": 0.3, \"model.node_dropout\": 0.5, \"model.nd_weight\": 0.1, \"model.ed_weight\": 1.0, \"model.align_weight\": 0.05, \"model.residual_weight\": 0.002, \"model.gate_hidden_dim\": 32, \"model.epsilon\": 0.1, \"model.lambda_residual\": 0.25, \"model.review_generation_weight\": 0.01}",
+    "returncode": 0,
+    "result_json": "/home/infolab/mnt/mingyu/review_rec/rating4review/results/ma_rgcl_42_Amazon_Office_Products_14_20260515_080048_583583/test_results.json",
+    "rmse": 0.8757550928222921,
+    "status": "ok",
+    "all_metrics": "{\"mse\": 0.7669469826041816, \"rmse\": 0.8757550928222921, \"mae\": 0.6250138313221819, \"num_samples\": 5325, \"eval_clip\": false, \"min_rating\": 1.0, \"max_rating\": 5.0, \"unclipped_prediction_min\": 1.6405597925186157, \"unclipped_prediction_max\": 4.994610786437988, \"clipped_prediction_min\": 1.6405597925186157, \"clipped_prediction_max\": 4.994610786437988, \"label_min\": 1.0, \"label_max\": 5.0, \"rating_mean\": 4.317183017730713, \"rating_std\": 0.9550731778144836, \"rating_distribution\": {\"1.0\": 126, \"2.0\": 194, \"3.0\": 514, \"4.0\": 1522, \"5.0\": 2969}, \"pred_mean\": 4.353465351588289, \"pred_std\": 0.4578343303934299, \"pred_min\": 1.6405597925186157, \"pred_max\": 4.994610786437988, \"abs_error_mean\": 0.6250138313221819, \"abs_error_p90\": 1.3628380775451663, \"abs_error_p95\": 1.8255933761596694, \"abs_error_p99\": 3.1625982475280963, \"abs_error_max\": 3.927870750427246, \"mean_gate\": 0.8648692965507507, \"std_gate\": 0.08639611303806305, \"min_gate_value\": 0.5364293456077576, \"max_gate_value\": 0.9996875524520874, \"mean_gamma\": 0.13378265500068665, \"mean_edge_misalign_score\": 0.1416894793510437, \"best_valid_metric\": 0.8314773381111453}"
+  }
+}

@@ -4,6 +4,7 @@ from .narre import NARRE
 from .ssg import SSG
 from .rgcl import RGCL
 from .scg_rgcl import SCG_RGCL
+from .ma_rgcl import MA_RGCL
 from .iard_rm import IARDRM
 from .iarm_rm_senti import IARMRMSenti
 from .sgdn import SGDN
@@ -17,6 +18,7 @@ MODEL_DICT = {
     "ssg": SSG,
     "rgcl": RGCL,
     "scg_rgcl": SCG_RGCL,
+    "ma_rgcl": MA_RGCL,
     "iard_rm": IARDRM,
     "iarm_rm_senti": IARMRMSenti,
     "sgdn": SGDN,
