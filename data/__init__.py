@@ -6,6 +6,7 @@ from .rgcl_dataset import RGCLDataset
 from .scg_rgcl_dataset import SCGRGCLDataset
 from .ma_rgcl_dataset import MARGCLDataset
 from .iard_rm_dataset import IARDRMDataset
+from .iard_rm_gen_dataset import IARDRMGenDataset
 from .iarm_rm_senti_dataset import IARMRMSentiDataset
 from .sgdn_dataset import SGDNDataset
 from .daml_dataset import DAMLDataset
@@ -19,6 +20,7 @@ DATASET_DICT = {
     "scg_rgcl": SCGRGCLDataset,
     "ma_rgcl": MARGCLDataset,
     "iard_rm": IARDRMDataset,
+    "iard_rm_gen": IARDRMGenDataset,
     "iarm_rm_senti": IARMRMSentiDataset,
     "sgdn": SGDNDataset,
     "daml": DAMLDataset,

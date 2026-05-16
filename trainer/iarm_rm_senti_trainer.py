@@ -91,7 +91,6 @@ class IARMRMSentiTrainer(IARDRMTrainer):
             loss_dict = self.loss_computer(
                 output=output,
                 ratings=ratings,
-                prototypes=self.model.intent_extractor.prototypes,
                 q_agree=q_agree,
             )
             loss = loss_dict["loss"]
@@ -116,7 +115,6 @@ class IARMRMSentiTrainer(IARDRMTrainer):
             all_gates.append(_to_numpy(output["gate"]))
             all_p_inc.append(_to_numpy(output["p_inc"]))
             all_alignment.append(_to_numpy(output["alignment"]))
-            all_intent_entropy.append(_to_numpy(_intent_entropy(output["intent_weights"])))
             all_q_agree.append(batch["q_agree"].detach().cpu().numpy())
             all_q_inc.append(batch["q_inc"].detach().cpu().numpy())
             all_is_consistent.append(batch["is_consistent"].detach().cpu().numpy().astype(bool))
@@ -134,7 +132,6 @@ class IARMRMSentiTrainer(IARDRMTrainer):
         gate_values = np.concatenate(all_gates)
         p_inc_values = np.concatenate(all_p_inc)
         alignment_values = np.concatenate(all_alignment)
-        intent_entropy_values = np.concatenate(all_intent_entropy)
         q_agree_values = np.concatenate(all_q_agree)
         q_inc_values = np.concatenate(all_q_inc)
         is_consistent_values = np.concatenate(all_is_consistent)
@@ -143,7 +140,6 @@ class IARMRMSentiTrainer(IARDRMTrainer):
         averaged["mean_gate"], averaged["std_gate"] = _summarize_distribution(gate_values)
         averaged["mean_p_inc"], averaged["std_p_inc"] = _summarize_distribution(p_inc_values)
         averaged["mean_alignment"], averaged["std_alignment"] = _summarize_distribution(alignment_values)
-        averaged["mean_intent_entropy"], _ = _summarize_distribution(intent_entropy_values)
         averaged["mean_q_agree"], averaged["std_q_agree"] = _summarize_distribution(q_agree_values)
         averaged["mean_q_inc"], averaged["std_q_inc"] = _summarize_distribution(q_inc_values)
         averaged["corr_gate_q_agree"] = _safe_corr(gate_values, q_agree_values)
@@ -208,7 +204,6 @@ class IARMRMSentiTrainer(IARDRMTrainer):
             all_gates.append(_to_numpy(output["gate"]))
             all_p_inc.append(_to_numpy(output["p_inc"]))
             all_alignment.append(_to_numpy(output["alignment"]))
-            all_intent_entropy.append(_to_numpy(_intent_entropy(output["intent_weights"])))
             all_yY.append(_to_numpy(output["yY"]))
             all_yS.append(_to_numpy(output["yS"]))
             all_yR.append(_to_numpy(output["yR"]))
@@ -224,16 +219,15 @@ class IARMRMSentiTrainer(IARDRMTrainer):
 
         if not all_ratings:
             empty = np.array([], dtype=np.float64)
-            return self._build_eval_metrics(empty, empty, phase=phase)
+            return self._build_eval_metrics(empty, empty, user_ids=None, phase=phase)
 
         raw_predictions = np.concatenate(all_predictions)
         ratings = np.concatenate(all_ratings)
-        user_ids = np.concatenate(all_user_ids)
+        user_ids_arr = np.concatenate(all_user_ids)
         item_ids = np.concatenate(all_item_ids)
         gate_values = np.concatenate(all_gates)
         p_inc_values = np.concatenate(all_p_inc)
         alignment_values = np.concatenate(all_alignment)
-        intent_entropy_values = np.concatenate(all_intent_entropy)
         yY_values = np.concatenate(all_yY)
         yS_values = np.concatenate(all_yS)
         yR_values = np.concatenate(all_yR)
@@ -244,11 +238,11 @@ class IARMRMSentiTrainer(IARDRMTrainer):
         empty_history_values = np.concatenate(all_empty_history) if all_empty_history else None
         review_source_values = np.concatenate(all_review_source) if all_review_source else None
         predictions = np.clip(raw_predictions, self.min_rating, self.max_rating) if self.eval_clip else raw_predictions
-        metrics = self._build_eval_metrics(raw_predictions, ratings, phase=phase)
+        ranking_user_ids = user_ids_arr if self.use_ranking_metrics else None
+        metrics = self._build_eval_metrics(raw_predictions, ratings, user_ids=ranking_user_ids, phase=phase)
         metrics["mean_gate"], metrics["std_gate"] = _summarize_distribution(gate_values)
         metrics["mean_p_inc"], metrics["std_p_inc"] = _summarize_distribution(p_inc_values)
         metrics["mean_alignment"], metrics["std_alignment"] = _summarize_distribution(alignment_values)
-        metrics["mean_intent_entropy"], _ = _summarize_distribution(intent_entropy_values)
         metrics["mean_q_agree"], metrics["std_q_agree"] = _summarize_distribution(q_agree_values)
         metrics["mean_q_inc"], metrics["std_q_inc"] = _summarize_distribution(q_inc_values)
         metrics["corr_gate_q_agree"] = _safe_corr(gate_values, q_agree_values)
@@ -271,7 +265,7 @@ class IARMRMSentiTrainer(IARDRMTrainer):
             for idx in range(len(predictions)):
                 records.append(
                     {
-                        "user_id": int(user_ids[idx]),
+                        "user_id": int(user_ids_arr[idx]),
                         "item_id": int(item_ids[idx]),
                         "rating": float(ratings[idx]),
                         "pred_unclipped": float(raw_predictions[idx]),
@@ -284,7 +278,6 @@ class IARMRMSentiTrainer(IARDRMTrainer):
                         "is_consistent": bool(is_consistent_values[idx]),
                         "sent_score": float(sent_score_values[idx]),
                         "alignment": float(alignment_values[idx]),
-                        "intent_entropy": float(intent_entropy_values[idx]),
                         "yY": float(yY_values[idx]),
                         "yS": float(yS_values[idx]),
                         "yR": float(yR_values[idx]),
@@ -368,7 +361,6 @@ def self_inspect_iarm_batch(model, batch, edge_index, edge_weight=None):
     loss_dict = model.loss_computer(
         output=output,
         ratings=batch["ratings"],
-        prototypes=model.intent_extractor.prototypes,
         q_agree=batch["q_agree"],
     )
     loss_dict["loss"].backward()

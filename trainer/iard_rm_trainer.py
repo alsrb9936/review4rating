@@ -196,8 +196,7 @@ class IARDRMTrainer(BaseTrainer):
             )
             loss_dict = self.loss_computer(
                 output=output,
-                ratings=ratings,
-                prototypes=self.model.intent_extractor.prototypes,
+                ratings=ratings
             )
             loss = loss_dict["loss"]
 
@@ -222,7 +221,6 @@ class IARDRMTrainer(BaseTrainer):
             all_gates.append(_to_numpy(output["gate"]))
             all_p_inc.append(_to_numpy(output["p_inc"]))
             all_alignment.append(_to_numpy(output["alignment"]))
-            all_intent_entropy.append(_to_numpy(_intent_entropy(output["intent_weights"])))
             empty_history_mask = batch.get("empty_history_mask")
             if empty_history_mask is not None:
                 all_empty_history.append(empty_history_mask.detach().cpu().numpy().astype(np.float32))
@@ -237,13 +235,11 @@ class IARDRMTrainer(BaseTrainer):
         gate_values = np.concatenate(all_gates)
         p_inc_values = np.concatenate(all_p_inc)
         alignment_values = np.concatenate(all_alignment)
-        intent_entropy_values = np.concatenate(all_intent_entropy)
         train_metrics = self._build_metrics(predictions, ratings)
         averaged.update(train_metrics)
         averaged["mean_gate"], averaged["std_gate"] = _summarize_distribution(gate_values)
         averaged["mean_p_inc"], averaged["std_p_inc"] = _summarize_distribution(p_inc_values)
         averaged["mean_alignment"], averaged["std_alignment"] = _summarize_distribution(alignment_values)
-        averaged["mean_intent_entropy"], _ = _summarize_distribution(intent_entropy_values)
         if all_empty_history:
             averaged["mean_empty_history_ratio"] = float(np.concatenate(all_empty_history).mean())
         return averaged
@@ -258,7 +254,6 @@ class IARDRMTrainer(BaseTrainer):
         all_gates = []
         all_p_inc = []
         all_alignment = []
-        all_intent_entropy = []
         all_yY = []
         all_yS = []
         all_yR = []
@@ -300,7 +295,6 @@ class IARDRMTrainer(BaseTrainer):
             all_gates.append(_to_numpy(output["gate"]))
             all_p_inc.append(_to_numpy(output["p_inc"]))
             all_alignment.append(_to_numpy(output["alignment"]))
-            all_intent_entropy.append(_to_numpy(_intent_entropy(output["intent_weights"])))
             all_yY.append(_to_numpy(output["yY"]))
             all_yS.append(_to_numpy(output["yS"]))
             all_yR.append(_to_numpy(output["yR"]))
@@ -312,16 +306,15 @@ class IARDRMTrainer(BaseTrainer):
 
         if not all_ratings:
             empty = np.array([], dtype=np.float64)
-            return self._build_eval_metrics(empty, empty, phase=phase)
+            return self._build_eval_metrics(empty, empty, user_ids=None, phase=phase)
 
         raw_predictions = np.concatenate(all_predictions)
         ratings = np.concatenate(all_ratings)
-        user_ids = np.concatenate(all_user_ids)
+        user_ids_arr = np.concatenate(all_user_ids)
         item_ids = np.concatenate(all_item_ids)
         gate_values = np.concatenate(all_gates)
         p_inc_values = np.concatenate(all_p_inc)
         alignment_values = np.concatenate(all_alignment)
-        intent_entropy_values = np.concatenate(all_intent_entropy)
         yY_values = np.concatenate(all_yY)
         yS_values = np.concatenate(all_yS)
         yR_values = np.concatenate(all_yR)
@@ -332,11 +325,11 @@ class IARDRMTrainer(BaseTrainer):
             if self.eval_clip
             else raw_predictions
         )
-        metrics = self._build_eval_metrics(raw_predictions, ratings, phase=phase)
+        ranking_user_ids = user_ids_arr if self.use_ranking_metrics else None
+        metrics = self._build_eval_metrics(raw_predictions, ratings, user_ids=ranking_user_ids, phase=phase)
         metrics["mean_gate"], metrics["std_gate"] = _summarize_distribution(gate_values)
         metrics["mean_p_inc"], metrics["std_p_inc"] = _summarize_distribution(p_inc_values)
         metrics["mean_alignment"], metrics["std_alignment"] = _summarize_distribution(alignment_values)
-        metrics["mean_intent_entropy"], _ = _summarize_distribution(intent_entropy_values)
         if empty_history_values is not None:
             metrics["mean_empty_history_ratio"] = float(empty_history_values.mean())
         if review_source_values is not None and phase in {"valid", "test"}:
@@ -354,7 +347,7 @@ class IARDRMTrainer(BaseTrainer):
             for idx in range(len(predictions)):
                 records.append(
                     {
-                        "user_id": int(user_ids[idx]),
+                        "user_id": int(user_ids_arr[idx]),
                         "item_id": int(item_ids[idx]),
                         "rating": float(ratings[idx]),
                         "pred_unclipped": float(raw_predictions[idx]),
@@ -363,7 +356,6 @@ class IARDRMTrainer(BaseTrainer):
                         "gate": float(gate_values[idx]),
                         "p_inc": float(p_inc_values[idx]),
                         "alignment": float(alignment_values[idx]),
-                        "intent_entropy": float(intent_entropy_values[idx]),
                         "yY": float(yY_values[idx]),
                         "yS": float(yS_values[idx]),
                         "yR": float(yR_values[idx]),
@@ -459,7 +451,7 @@ def run_iard_trainer_sanity_check():
         item_history_emb=batch["item_history_emb"],
         item_history_mask=batch["item_history_mask"],
     )
-    loss_dict = model.loss_computer(output=output, ratings=batch["ratings"], prototypes=model.intent_extractor.prototypes)
+    loss_dict = model.loss_computer(output=output, ratings=batch["ratings"])
     loss = loss_dict["loss"]
     loss.backward()
     if torch.isnan(loss):

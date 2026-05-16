@@ -1,0 +1,114 @@
+training:
+  batch: 1
+  eval_batch: 1
+  epoch: 500
+  lr: 0.01
+  weight_decay: 0
+  early_stop_patience: 50
+  grad_clip: 1.0
+  eval_step: 1
+evaluation:
+  eval_step: 1
+  early_stop_patience: 10
+  best_metric_name: rmse
+  eval_clip: false
+  drop_cold_start_eval: true
+  min_rating: 1.0
+  max_rating: 5.0
+  use_ranking_metrics: false
+  ranking_k: &id001
+  - 5
+  - 10
+  - 20
+  ranking_threshold: 4
+  metrics:
+  - rmse
+  - mse
+  - mae
+model:
+  embedding_size: 32
+  dropout_prob: 0.1
+  name: scg_rgcl
+  num_layers: 2
+  dropout: 0.7
+  node_dropout: 0.7
+  review_dim: 384
+  use_review: true
+  symm: true
+  use_contrastive: true
+  nd_weight: 0.1
+  ed_weight: 0.7
+  classification: true
+  use_sentiment_gate: true
+  sentiment_gate_type: calibrated_sigmoid
+  min_gate: 0.2
+  gate_beta0_init: 3.0
+  gate_beta1_init: 2.0
+  learnable_gate: true
+  use_sentiment_confidence: true
+  calibrate_sentiment_to_rating: true
+  use_raw_sentiment_distance: false
+  sentiment_label_col: null
+  sentiment_prob_cols: null
+  log_gate_stats: true
+data:
+  data_path: /home/infolab/mnt/mingyu/review_rec/dataset
+  other_path: /home/infolab/mnt/mingyu/review_rec/cached/others
+  embedding_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding
+  sentiment_path: /home/infolab/mnt/mingyu/review_rec/cached/sentiment
+  sentiment_model: cardiffnlp/twitter-roberta-large-topic-sentiment-latest
+  sentiment_model_2: cardiffnlp/twitter-roberta-base-sentiment-latest
+  sentiment_model_5: cardiffnlp/twitter-roberta-large-topic-sentiment-latest
+  sentiment_mode: 5
+  language_model: sentence-transformers/all-MiniLM-L12-v2
+  use_review_text: false
+  use_review_embedding: true
+  compute_review_embedding: true
+  use_sentiment: true
+  review_emb_path: /home/infolab/mnt/mingyu/review_rec/cached/embedding/Amazon_Office_Products_14/all-MiniLM-L12-v2.pt
+  use_bert_whitening: false
+  bert_whitening_model: bert-base-uncased
+  bert_whitening_dim: 64
+  bert_whitening_pooling: cls
+  bert_whitening_normalize: true
+  bert_whitening_cache_scope: full
+  bert_whitening_stats_path: null
+  use_cached_graphs: true
+use_ranking_metrics: false
+ranking_k: *id001
+ranking_threshold: 4
+use_sentiment_gate: true
+sentiment_gate_type: calibrated_sigmoid
+min_gate: 0.2
+gate_beta0_init: 3.0
+gate_beta1_init: 2.0
+learnable_gate: true
+use_sentiment_confidence: true
+calibrate_sentiment_to_rating: true
+use_raw_sentiment_distance: false
+sentiment_label_col: null
+sentiment_prob_cols: null
+log_gate_stats: true
+use_cached_graphs: true
+gpu: 3
+seed: 42
+dataset: Amazon_Office_Products_14
+basemodel: scg_rgcl
+result_path: results/scg_rgcl_42_Amazon_Office_Products_14_20260515_235634_213702
+cold_start_eval_summary:
+  valid:
+    num_samples_before: 5326
+    cold_user_count: 0
+    cold_item_count: 0
+    cold_interaction_count: 0
+    removed_count: 0
+    num_samples_after: 5326
+  test:
+    num_samples_before: 5326
+    cold_user_count: 0
+    cold_item_count: 0
+    cold_interaction_count: 0
+    removed_count: 0
+    num_samples_after: 5326
+num_users: 4905
+num_items: 2420

@@ -8,9 +8,9 @@ class IARMRMSentiLossComputer(IARDLossComputer):
     def __init__(self, configs):
         super().__init__(configs)
         self.lambda_gate_anchor = float(configs.get("lambda_gate_anchor", 0.0))
-        self.use_q_agree_for_align = bool(configs.get("use_q_agree_for_align", False))
+        self.use_q_agree_for_align = bool(configs.get("use_q_agree_for_align", True))
 
-    def forward(self, output, ratings, prototypes, q_agree=None):
+    def forward(self, output, ratings, q_agree=None):
         pred = output["pred"]
         zY = output["zY"]
         zX = output["zX"]
@@ -47,10 +47,6 @@ class IARMRMSentiLossComputer(IARDLossComputer):
         entropy = -gate * torch.log(gate + self.eps) - (1.0 - gate) * torch.log(1.0 - gate + self.eps)
         gate_loss = -torch.mean(entropy)
 
-        normalized_prototypes = F.normalize(prototypes, dim=-1, eps=self.eps)
-        gram = normalized_prototypes @ normalized_prototypes.T
-        identity = torch.eye(gram.size(0), device=gram.device, dtype=gram.dtype)
-        proto_loss = torch.mean((gram - identity).square())
 
         if q_agree is None:
             gate_anchor_loss = gate.new_tensor(0.0)
@@ -64,7 +60,6 @@ class IARMRMSentiLossComputer(IARDLossComputer):
             + self.lambda_sep * sep_loss
             + self.lambda_recon * recon_loss
             + self.lambda_gate * gate_loss
-            + self.lambda_proto * proto_loss
             + self.lambda_gate_anchor * gate_anchor_loss
         )
 
@@ -75,7 +70,6 @@ class IARMRMSentiLossComputer(IARDLossComputer):
             "sep_loss": sep_loss,
             "recon_loss": recon_loss,
             "gate_loss": gate_loss,
-            "proto_loss": proto_loss,
             "gate_anchor_loss": gate_anchor_loss,
         }
 

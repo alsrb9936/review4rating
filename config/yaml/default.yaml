@@ -13,6 +13,9 @@ evaluation:
   drop_cold_start_eval: true
   min_rating: 1.0
   max_rating: 5.0
+  use_ranking_metrics: false
+  ranking_k: [5, 10, 20]
+  ranking_threshold: 4
 
 model:
   embedding_size: 64

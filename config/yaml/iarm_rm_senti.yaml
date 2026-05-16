@@ -3,7 +3,7 @@ basemodel: "iarm_rm_senti"
 model:
   name: "iarm_rm_senti"
   d_id: 64
-  d_text: 384
+  d_text: 3
   review_emb_dim: null
   review_context_mode: "history"
   history_aggregation: "mean"

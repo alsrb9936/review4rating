@@ -203,6 +203,20 @@ class SCGRGCLDataset(RecDataset):
         confidence = 1.0 - entropy / max_entropy
         return np.clip(confidence, 0.0, 1.0).astype(np.float32)
 
+    def _mean_rating_table(self, num_classes: int, ratings: np.ndarray) -> np.ndarray:
+        fallback = float(ratings.mean()) if len(ratings) else 3.0
+        return np.full(num_classes, fallback, dtype=np.float32)
+
+    def _normalize_prob_rows(self, probs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        row_sums = probs.sum(axis=1, keepdims=True)
+        valid_mask = row_sums.reshape(-1) > self.eps
+        normalized = np.zeros_like(probs, dtype=np.float32)
+        if np.any(valid_mask):
+            normalized[valid_mask] = probs[valid_mask] / row_sums[valid_mask]
+        if np.any(~valid_mask):
+            normalized[~valid_mask] = 1.0 / max(probs.shape[1], 1)
+        return normalized.astype(np.float32), valid_mask
+
     def _compute_sentiment_features(self, frame):
         ratings = frame["rating"].to_numpy(dtype=np.float32)
         probs = self._detect_prob_matrix(frame)
@@ -217,30 +231,60 @@ class SCGRGCLDataset(RecDataset):
 
         if probs is not None:
             probs = probs.astype(np.float32)
-            probs = probs / np.maximum(probs.sum(axis=1, keepdims=True), self.eps)
+            probs, valid_prob_mask = self._normalize_prob_rows(probs)
+            if np.any(~valid_prob_mask):
+                print(
+                    f"[SCG_RGCL] Found {int((~valid_prob_mask).sum())} rows with zero-sum sentiment scores; "
+                    "treating them as missing sentiment signal."
+                )
             if self.calibrate_sentiment_to_rating:
-                table = self._calibrate_from_probs(probs, ratings)
+                if np.any(valid_prob_mask):
+                    table = self._calibrate_from_probs(probs[valid_prob_mask], ratings[valid_prob_mask])
+                else:
+                    table = self._mean_rating_table(probs.shape[1], ratings)
                 sent_scores = probs @ table
             elif self.use_raw_sentiment_distance:
                 table = np.linspace(self.min_rating, self.max_rating, probs.shape[1], dtype=np.float32)
                 sent_scores = probs @ table
             else:
-                table = self._calibrate_from_probs(probs, ratings)
+                if np.any(valid_prob_mask):
+                    table = self._calibrate_from_probs(probs[valid_prob_mask], ratings[valid_prob_mask])
+                else:
+                    table = self._mean_rating_table(probs.shape[1], ratings)
                 sent_scores = probs @ table
             confidence = self._compute_confidence(probs)
+            if np.any(~valid_prob_mask):
+                confidence = confidence.copy()
+                confidence[~valid_prob_mask] = 0.0
             return table.astype(np.float32), sent_scores.astype(np.float32), confidence, None, None
 
         assert labels is not None
         num_classes = 5
+        valid_label_mask = (labels >= 0) & (labels < num_classes)
         if self.calibrate_sentiment_to_rating:
-            table = self._calibrate_from_labels(labels, ratings, num_classes=num_classes)
+            if np.any(valid_label_mask):
+                table = self._calibrate_from_labels(labels[valid_label_mask], ratings[valid_label_mask], num_classes=num_classes)
+            else:
+                table = self._mean_rating_table(num_classes, ratings)
         elif self.use_raw_sentiment_distance:
             table = np.linspace(self.min_rating, self.max_rating, num_classes, dtype=np.float32)
         else:
-            table = self._calibrate_from_labels(labels, ratings, num_classes=num_classes)
+            if np.any(valid_label_mask):
+                table = self._calibrate_from_labels(labels[valid_label_mask], ratings[valid_label_mask], num_classes=num_classes)
+            else:
+                table = self._mean_rating_table(num_classes, ratings)
         safe_labels = np.clip(labels, 0, num_classes - 1)
         sent_scores = table[safe_labels]
         confidence = np.ones(len(frame), dtype=np.float32)
+        if np.any(~valid_label_mask):
+            print(
+                f"[SCG_RGCL] Found {int((~valid_label_mask).sum())} rows with missing sentiment labels; "
+                "treating them as missing sentiment signal."
+            )
+            sent_scores = sent_scores.astype(np.float32, copy=True)
+            sent_scores[~valid_label_mask] = float(np.mean(table))
+            confidence = confidence.astype(np.float32, copy=True)
+            confidence[~valid_label_mask] = 0.0
         return table.astype(np.float32), sent_scores.astype(np.float32), confidence, None, None
 
     def _build_encoder_graph(self, frame) -> None:

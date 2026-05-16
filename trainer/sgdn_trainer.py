@@ -54,6 +54,7 @@ class SGDNTrainer(BaseTrainer):
         self.model.eval()
         all_predictions = []
         all_ratings = []
+        all_user_ids = []
 
         for batch in dataloader:
             predictions = self.model.predict_ratings(batch)
@@ -61,14 +62,23 @@ class SGDNTrainer(BaseTrainer):
             all_predictions.append(predictions.detach().cpu().numpy())
             all_ratings.append(ratings.cpu().numpy())
 
+            if self.use_ranking_metrics:
+                user_ids = batch.get("decoder_user_ids")
+                if user_ids is not None:
+                    all_user_ids.append(user_ids.cpu().numpy())
+
         if not all_ratings:
             empty = np.array([], dtype=np.float64)
-            return self._build_eval_metrics(empty, empty, phase=phase)
+            return self._build_eval_metrics(empty, empty, user_ids=None, phase=phase)
 
         predictions = np.concatenate(all_predictions)
         ratings = np.concatenate(all_ratings)
 
-        metrics = self._build_eval_metrics(predictions, ratings, phase=phase)
+        user_ids = None
+        if self.use_ranking_metrics and all_user_ids:
+            user_ids = np.concatenate(all_user_ids)
+
+        metrics = self._build_eval_metrics(predictions, ratings, user_ids=user_ids, phase=phase)
         clipped = np.clip(predictions, self.min_rating, self.max_rating)
         clipped_errors = clipped - ratings
         metrics.update({

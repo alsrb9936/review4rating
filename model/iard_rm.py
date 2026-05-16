@@ -130,31 +130,6 @@ class HistoryAttentionEncoder(nn.Module):
         item_context = self._attend(query, item_history_emb, item_history_mask)
         return self._fuse(user_context, item_context)
 
-
-class PrototypeIntentExtractor(nn.Module):
-    def __init__(self, d_model=128, num_intents=8, tau_p=0.2):
-        super().__init__()
-        self.d_model = int(d_model)
-        self.num_intents = int(num_intents)
-        self.tau_p = float(tau_p)
-        self.prototypes = nn.Parameter(torch.empty(self.num_intents, self.d_model))
-        self.layer_norm = nn.LayerNorm(self.d_model)
-        self._init_weights()
-
-    def _init_weights(self):
-        nn.init.xavier_uniform_(self.prototypes)
-
-    def forward(self, hX):
-        normalized_hX = F.normalize(hX, dim=-1, eps=1e-8)
-        normalized_prototypes = F.normalize(self.prototypes, dim=-1, eps=1e-8)
-        scores = normalized_hX @ normalized_prototypes.T
-        scores = scores / self.tau_p
-        intent_weights = F.softmax(scores, dim=-1)
-        zX_proto = intent_weights @ self.prototypes
-        zX = self.layer_norm(zX_proto + hX)
-        return zX, intent_weights
-
-
 class SharedResidualDisentangler(nn.Module):
     def __init__(self, d_model=128, dropout=0.1, disentangler_mode="conditioned"):
         super().__init__()
@@ -227,14 +202,15 @@ class InconsistencyGate(nn.Module):
                     nn.init.zeros_(module.bias)
 
     def forward(self, zY, zS, zR):
-        alignment = F.cosine_similarity(zY, zS, dim=-1, eps=1e-8)
+        alignment = F.cosine_similarity(zY, zS, dim=-1)
         if self.fixed_gate_value is not None:
             gate = torch.full_like(alignment, float(self.fixed_gate_value))
             p_inc = 1.0 - gate
             return alignment, p_inc, gate
-        gate_input = torch.cat([zY, zS, zR, zY * zS, torch.abs(zY - zS)], dim=-1)
+        gate_input = torch.cat([zY, zS, zR, zY*zS, torch.abs(zY - zS)], dim=-1)
         raw_gate = torch.sigmoid(self.gate_mlp(gate_input).squeeze(-1))
         alignment_gate = torch.sigmoid(self.alpha * alignment)
+
         gate = 0.5 * raw_gate + 0.5 * alignment_gate
         p_inc = 1.0 - gate
         return alignment, p_inc, gate
@@ -272,7 +248,8 @@ class RatingPredictor(nn.Module):
         yY = self.fY(zY).squeeze(-1)
         yS = self.fS(zS).squeeze(-1)
         yR = self.fR(zR).squeeze(-1)
-        pred = yY + self.shared_scale * gate * yS + self.residual_scale * (1.0 - gate) * self.eta * yR
+        pred = yY + self.shared_scale * gate * yS + self.residual_scale * (1.0 - gate) * yR
+        # pred = yY
         return pred, yY, yS, yR
 
 
@@ -284,13 +261,12 @@ class IARDLossComputer(nn.Module):
         self.lambda_sep = float(configs.get("lambda_sep", 0.05))
         self.lambda_recon = float(configs.get("lambda_recon", 0.1))
         self.lambda_gate = float(configs.get("lambda_gate", 0.001))
-        self.lambda_proto = float(configs.get("lambda_proto", 0.01))
-        self.tau_c = float(configs.get("tau_c", 0.2))
+        self.tau_c = float(configs.get("tau_c", 0.1))
         self.eps = float(configs.get("eps", 1e-8))
         self.detach_gate_for_align = bool(configs.get("detach_gate_for_align", True))
-        self.detach_zx_for_recon = bool(configs.get("detach_zx_for_recon", False))
+        self.detach_zx_for_recon = bool(configs.get("detach_zx_for_recon", True))
 
-    def forward(self, output, ratings, prototypes):
+    def forward(self, output, ratings):
         pred = output["pred"]
         zY = output["zY"]
         zX = output["zX"]
@@ -301,14 +277,14 @@ class IARDLossComputer(nn.Module):
 
         rating_loss = F.mse_loss(pred, ratings)
 
-        zY_norm = F.normalize(zY, dim=-1, eps=self.eps)
-        zS_norm = F.normalize(zS, dim=-1, eps=self.eps)
-        logits = zY_norm @ zS_norm.T
-        logits = logits / self.tau_c
-        labels = torch.arange(logits.size(0), device=logits.device)
-        per_sample_nce = F.cross_entropy(logits, labels, reduction="none")
-        gate_weight = gate.detach() if self.detach_gate_for_align else gate
-        align_loss = torch.mean(gate_weight * per_sample_nce)
+        # zY_norm = F.normalize(zY, dim=-1, eps=self.eps)
+        # zS_norm = F.normalize(zS, dim=-1, eps=self.eps)
+        # logits = zY_norm @ zS_norm.T
+        # logits = logits / self.tau_c
+        # labels = torch.arange(logits.size(0), device=logits.device)
+        # per_sample_nce = F.cross_entropy(logits, labels, reduction="none")
+        # gate_weight = gate.detach() if self.detach_gate_for_align else gate
+        # align_loss = torch.mean(gate_weight * per_sample_nce)
 
         normalized_zR = F.normalize(zR, dim=-1, eps=self.eps)
         normalized_zY = F.normalize(zY, dim=-1, eps=self.eps)
@@ -320,31 +296,20 @@ class IARDLossComputer(nn.Module):
         recon_target = zX.detach() if self.detach_zx_for_recon else zX
         recon_loss = F.mse_loss(recon_zX, recon_target)
 
-        entropy = -gate * torch.log(gate + self.eps) - (1.0 - gate) * torch.log(1.0 - gate + self.eps)
-        gate_loss = -torch.mean(entropy)
-
-        normalized_prototypes = F.normalize(prototypes, dim=-1, eps=self.eps)
-        gram = normalized_prototypes @ normalized_prototypes.T
-        identity = torch.eye(gram.size(0), device=gram.device, dtype=gram.dtype)
-        proto_loss = torch.mean((gram - identity).square())
-
+        
         loss = (
             self.lambda_rating * rating_loss
-            + self.lambda_align * align_loss
+            # + self.lambda_align * align_loss
             + self.lambda_sep * sep_loss
             + self.lambda_recon * recon_loss
-            + self.lambda_gate * gate_loss
-            + self.lambda_proto * proto_loss
         )
 
         return {
             "loss": loss,
             "rating_loss": rating_loss,
-            "align_loss": align_loss,
-            "sep_loss": sep_loss,
+            # "align_loss": 0,
+            # "sep_loss": sep_loss,
             "recon_loss": recon_loss,
-            "gate_loss": gate_loss,
-            "proto_loss": proto_loss,
         }
 
 
@@ -358,10 +323,8 @@ class IARDRM(AbstractRec):
         self.d_text = int(configs.get("d_text", 768))
         self.d_model = int(configs.get("d_model", 128))
         self.num_layers = int(configs.get("num_layers", 2))
-        self.num_intents = int(configs.get("num_intents", 8))
         self.eta = float(configs.get("eta", 0.1))
         self.dropout = float(configs.get("dropout", 0.1))
-        self.tau_p = float(configs.get("tau_p", 0.2))
         self.gate_alpha = float(configs.get("gate_alpha", 5.0))
         self.shared_fusion_scale = float(configs.get("shared_fusion_scale", 1.0))
         self.residual_fusion_scale = float(configs.get("residual_fusion_scale", 1.0))
@@ -392,11 +355,6 @@ class IARDRM(AbstractRec):
         self.history_attention_encoder = HistoryAttentionEncoder(
             raw_dim=self.review_emb_dim,
             d_model=self.d_model,
-        )
-        self.intent_extractor = PrototypeIntentExtractor(
-            d_model=self.d_model,
-            num_intents=self.num_intents,
-            tau_p=self.tau_p,
         )
         self.disentangler = SharedResidualDisentangler(
             d_model=self.d_model,
@@ -474,8 +432,8 @@ class IARDRM(AbstractRec):
                 item_history_mask=item_history_mask.to(zY.device),
             )
         hX = self.review_encoder(review_emb)
-        zX, intent_weights = self.intent_extractor(hX)
-        zS, zR, recon_zX = self.disentangler(zX, zY)
+        zX = hX
+        zS, zR, recon_zX = self.disentangler(hX, zY)
         alignment, p_inc, gate = self.gate(zY, zS, zR)
         pred, yY, yS, yR = self.predictor(zY, zS, zR, gate)
         pred = pred + self.user_bias(user_ids).squeeze(-1) + self.item_bias(item_ids).squeeze(-1) + self.global_bias
@@ -483,10 +441,9 @@ class IARDRM(AbstractRec):
             "pred": pred,
             "zY": zY,
             "hX": hX,
-            "zX": zX,
+            "zX" :zX,
             "zS": zS,
             "zR": zR,
-            "intent_weights": intent_weights,
             "alignment": alignment,
             "p_inc": p_inc,
             "gate": gate,
@@ -511,8 +468,7 @@ class IARDRM(AbstractRec):
         )
         loss_dict = self.loss_computer(
             output=output,
-            ratings=batch_data["ratings"],
-            prototypes=self.intent_extractor.prototypes,
+            ratings=batch_data["ratings"]
         )
         loss = loss_dict["loss"]
         numeric = {key: float(value.detach().item()) for key, value in loss_dict.items()}
@@ -522,4 +478,5 @@ class IARDRM(AbstractRec):
     def predict_scores(self, *args, **kwargs):
         user_ids = args[0] if args else kwargs["user_ids"]
         return torch.zeros((user_ids.size(0), self.num_items), device=user_ids.device)
+
 

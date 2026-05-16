@@ -149,18 +149,28 @@ class SSGTrainer(BaseTrainer):
         self.model.eval()
         all_predictions = []
         all_ratings = []
+        all_user_ids = []
 
         for batch in dataloader:
             predictions = self._predict_batch(batch).view(-1)
             all_predictions.append(predictions.cpu().numpy())
             all_ratings.append(batch["rating"].cpu().numpy())
 
+            if self.use_ranking_metrics:
+                user_ids = batch.get("user_id")
+                if user_ids is not None:
+                    all_user_ids.append(user_ids.cpu().numpy())
+
         if not all_ratings:
             empty = np.array([], dtype=np.float64)
-            return self._build_eval_metrics(empty, empty, phase=phase)
+            return self._build_eval_metrics(empty, empty, user_ids=None, phase=phase)
 
         predictions = np.concatenate(all_predictions)
         ratings = np.concatenate(all_ratings)
+
+        user_ids = None
+        if self.use_ranking_metrics and all_user_ids:
+            user_ids = np.concatenate(all_user_ids)
 
         test_clip = getattr(self.model, "test_clip", False)
         train_clip = getattr(self.model, "train_clip", False)
@@ -171,7 +181,7 @@ class SSGTrainer(BaseTrainer):
         else:
             clipped = predictions
 
-        metrics = self._build_eval_metrics(predictions, ratings, phase=phase)
+        metrics = self._build_eval_metrics(predictions, ratings, user_ids=user_ids, phase=phase)
         metrics.update({
             "pred_min": float(np.min(predictions)),
             "pred_max": float(np.max(predictions)),

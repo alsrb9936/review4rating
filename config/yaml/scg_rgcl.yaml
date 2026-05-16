@@ -26,11 +26,15 @@ model:
 training:
   batch: 1
   eval_batch: 1
-  epoch: 400
+  epoch: 500
   lr: 0.02
+  # lr: 0.01
   weight_decay: 1.0e-05
+  # weight_decay: 0
+
   early_stop_patience: 50
   grad_clip: 0.5
+  # grad_clip: 1.0
   eval_step: 1
 evaluation:
   best_metric_name: rmse

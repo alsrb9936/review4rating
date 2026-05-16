@@ -19,6 +19,7 @@ MODEL_TRAINER_DICT = {
     "scg_rgcl": SCGRGCLTrainer,
     "ma_rgcl": MARGCLTrainer,
     "iard_rm": IARDRMTrainer,
+    "iard_rm_gen": IARDRMTrainer,
     "iarm_rm_senti": IARMRMSentiTrainer,
     "sgdn": SGDNTrainer,
     "daml": DAMLTrainer,

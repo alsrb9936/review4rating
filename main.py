@@ -25,7 +25,7 @@ def str_to_bool(value):
 
 def apply_iard_loss_preset(configs):
     model_name = configs.get('basemodel') or configs.get('model', {}).get('name')
-    if model_name not in {'iard_rm', 'iarm_rm_senti'}:
+    if model_name not in {'iard_rm', 'iard_rm_gen', 'iarm_rm_senti'}:
         return
 
     preset = configs.get('loss_preset', 'full_iard')

@@ -82,6 +82,8 @@ class Config(dict[str, Any]):
             "residual_fusion_scale",
             "fixed_gate_value",
             "disentangler_mode",
+            "gen_teacher_forcing_ratio",
+            "normalize_gen_loss",
             "ssg_preset",
         },
         "loss": {
@@ -92,6 +94,7 @@ class Config(dict[str, Any]):
             "lambda_recon",
             "lambda_gate",
             "lambda_proto",
+            "lambda_gen",
             "tau_c",
             "eps",
             "detach_gate_for_align",

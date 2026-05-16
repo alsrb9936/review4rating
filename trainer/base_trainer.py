@@ -10,6 +10,9 @@ _metric = importlib.import_module("metric")
 rmse = _metric.rmse
 mse = _metric.mse
 mae = _metric.mae
+ndcg_at_k = _metric.ndcg_at_k
+hitrate_at_k = _metric.hitrate_at_k
+recall_at_k = _metric.recall_at_k
 print_results = _metric.print_results
 
 
@@ -45,6 +48,9 @@ class BaseTrainer:
         self.eval_step = configs.get('eval_step', 1)
         self.model_name = configs.get('basemodel') or configs.get('model', {}).get('name', 'unknown')
         self.dataset_name = configs.get('dataset', 'unknown')
+        self.use_ranking_metrics = self._get_bool_config('use_ranking_metrics', False)
+        self.ranking_k = configs.get('ranking_k', [5, 10, 20])
+        self.ranking_threshold = float(configs.get('ranking_threshold', 4.0))
     
     def _create_optimizer(self):
         lr = float(self.configs.get('lr', 0.001))
@@ -56,7 +62,7 @@ class BaseTrainer:
             {'params': bias_params, 'lr': lr, 'weight_decay': 0.0},
         ])
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6, verbose=True
+            optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6
         )
         return optimizer
     
@@ -81,7 +87,7 @@ class BaseTrainer:
             return float('nan')
         return float(fn(values))
 
-    def _build_eval_metrics(self, predictions: np.ndarray[Any, Any], ratings: np.ndarray[Any, Any], phase='valid'):
+    def _build_eval_metrics(self, predictions: np.ndarray[Any, Any], ratings: np.ndarray[Any, Any], user_ids=None, phase='valid'):
         raw_predictions = predictions.astype(np.float64, copy=False)
         eval_predictions = (
             np.clip(raw_predictions, self.min_rating, self.max_rating)
@@ -121,7 +127,19 @@ class BaseTrainer:
             'abs_error_p99': self._range_value(abs_errors, lambda x: float(np.percentile(x, 99))),
             'abs_error_max': self._range_value(abs_errors, np.max),
         })
+        
+        if self.use_ranking_metrics and user_ids is not None:
+            metrics.update(self._compute_ranking_metrics(raw_predictions, ratings, user_ids))
+        
         return metrics
+    
+    def _compute_ranking_metrics(self, predictions, ratings, user_ids):
+        ranking_metrics = {}
+        for k in self.ranking_k:
+            ranking_metrics[f'ndcg@{k}'] = float(ndcg_at_k(predictions, ratings, user_ids, k=k, rating_threshold=self.ranking_threshold))
+            ranking_metrics[f'hitrate@{k}'] = float(hitrate_at_k(predictions, ratings, user_ids, k=k, rating_threshold=self.ranking_threshold))
+            ranking_metrics[f'recall@{k}'] = float(recall_at_k(predictions, ratings, user_ids, k=k, rating_threshold=self.ranking_threshold))
+        return ranking_metrics
     
     def train(self):
         print(f"Starting training for {self.epoch} epochs")
@@ -180,6 +198,7 @@ class BaseTrainer:
         
         all_predictions = []
         all_ratings = []
+        all_user_ids = []
         
         for batch in dataloader:
             ratings = batch["rating"].to(self.device)
@@ -187,15 +206,24 @@ class BaseTrainer:
             predictions = self._predict_batch(batch).view(-1)
             all_predictions.append(predictions.cpu().numpy())
             all_ratings.append(ratings.cpu().numpy())
+            
+            if self.use_ranking_metrics:
+                user_ids = batch.get("user_id") or batch.get("user_ids")
+                if user_ids is not None:
+                    all_user_ids.append(user_ids.cpu().numpy())
 
         if not all_ratings:
             empty = np.array([], dtype=np.float64)
-            return self._build_eval_metrics(empty, empty, phase=phase)
+            return self._build_eval_metrics(empty, empty, user_ids=None, phase=phase)
          
         predictions = np.concatenate(all_predictions)
         ratings = np.concatenate(all_ratings)
         
-        return self._build_eval_metrics(predictions, ratings, phase=phase)
+        user_ids = None
+        if self.use_ranking_metrics and all_user_ids:
+            user_ids = np.concatenate(all_user_ids)
+        
+        return self._build_eval_metrics(predictions, ratings, user_ids=user_ids, phase=phase)
     
     def _predict_batch(self, batch):
         raise NotImplementedError("Subclasses must implement _predict_batch()")
